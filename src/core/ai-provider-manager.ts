@@ -137,19 +137,17 @@ export interface AskOptions {
 export class GenerateRouter {
   constructor(
     private vercel: AIProvider,
-    private claudeCode: AIProvider | null,
     private agentSdk: AIProvider | null = null,
   ) {}
 
   /** Resolve the active provider, optionally overridden per-request. */
   async resolve(override?: string): Promise<AIProvider> {
-    if (override === 'agent-sdk' && this.agentSdk) return this.agentSdk
-    if (override === 'claude-code' && this.claudeCode) return this.claudeCode
+    // 'claude-code' is a legacy alias for 'agent-sdk'
+    if ((override === 'agent-sdk' || override === 'claude-code') && this.agentSdk) return this.agentSdk
     if (override === 'vercel-ai-sdk') return this.vercel
 
     const config = await readAIProviderConfig()
-    if (config.backend === 'agent-sdk' && this.agentSdk) return this.agentSdk
-    if (config.backend === 'claude-code' && this.claudeCode) return this.claudeCode
+    if ((config.backend === 'agent-sdk' || config.backend === 'claude-code') && this.agentSdk) return this.agentSdk
     return this.vercel
   }
 

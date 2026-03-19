@@ -140,26 +140,26 @@ describe('GenerateRouter', () => {
 
   it('should resolve to vercel when no override and config fallback', async () => {
     const vercel = makeProvider('vercel-ai')
-    const router = new GenerateRouter(vercel, null, null)
+    const router = new GenerateRouter(vercel, null)
 
-    // Without override, reads config — but claudeCode/agentSdk are null so falls back to vercel
+    // Without override, reads config — agentSdk is null so falls back to vercel
     const provider = await router.resolve()
     expect(provider).toBe(vercel)
   })
 
-  it('should resolve override claude-code when available', async () => {
+  it('should resolve override claude-code as alias for agent-sdk', async () => {
     const vercel = makeProvider('vercel-ai')
-    const cc = makeProvider('claude-code')
-    const router = new GenerateRouter(vercel, cc)
+    const agentSdk = makeProvider('agent-sdk')
+    const router = new GenerateRouter(vercel, agentSdk)
 
     const provider = await router.resolve('claude-code')
-    expect(provider).toBe(cc)
+    expect(provider).toBe(agentSdk)
   })
 
   it('should resolve override agent-sdk when available', async () => {
     const vercel = makeProvider('vercel-ai')
     const agentSdk = makeProvider('agent-sdk')
-    const router = new GenerateRouter(vercel, null, agentSdk)
+    const router = new GenerateRouter(vercel, agentSdk)
 
     const provider = await router.resolve('agent-sdk')
     expect(provider).toBe(agentSdk)

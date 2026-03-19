@@ -16,6 +16,7 @@ import type {
   AddResult,
   CommitPrepareResult,
   PushResult,
+  RejectResult,
   GitStatus,
   GitCommit,
   GitState,
@@ -102,7 +103,6 @@ export interface StageClosePositionParams {
 export class UnifiedTradingAccount {
   readonly id: string
   readonly label: string
-  readonly provider: string
   readonly broker: IBroker
   readonly git: TradingGit
   readonly platformId?: string
@@ -113,7 +113,6 @@ export class UnifiedTradingAccount {
     this.broker = broker
     this.id = broker.id
     this.label = broker.label
-    this.provider = broker.provider
     this.platformId = options.platformId
 
     // Wire internals
@@ -124,6 +123,9 @@ export class UnifiedTradingAccount {
         broker.getPositions(),
         broker.getOrders(pendingIds),
       ])
+      // Stamp aliceId on all contracts returned by broker
+      for (const p of positions) this.stampAliceId(p.contract)
+      for (const o of orders) this.stampAliceId(o.contract)
       return {
         netLiquidation: accountInfo.netLiquidation,
         totalCashValue: accountInfo.totalCashValue,
@@ -162,11 +164,32 @@ export class UnifiedTradingAccount {
       : new TradingGit(gitConfig)
   }
 
+  // ==================== aliceId management ====================
+
+  /** Construct aliceId: "{utaId}|{nativeKey}" */
+  private stampAliceId(contract: Contract): void {
+    const nativeKey = contract.localSymbol || contract.symbol || ''
+    contract.aliceId = `${this.id}|${nativeKey}`
+  }
+
+  /** Parse aliceId → { utaId, nativeKey }, or null if invalid. */
+  static parseAliceId(aliceId: string): { utaId: string; nativeKey: string } | null {
+    const sep = aliceId.indexOf('|')
+    if (sep === -1) return null
+    return { utaId: aliceId.slice(0, sep), nativeKey: aliceId.slice(sep + 1) }
+  }
+
   // ==================== Stage operations ====================
 
   stagePlaceOrder(params: StagePlaceOrderParams): AddResult {
     const contract = new Contract()
     contract.aliceId = params.aliceId
+    // Extract nativeKey from aliceId for broker resolution
+    const parsed = UnifiedTradingAccount.parseAliceId(params.aliceId)
+    if (parsed) {
+      contract.symbol = parsed.nativeKey
+      contract.localSymbol = parsed.nativeKey
+    }
     if (params.symbol) contract.symbol = params.symbol
 
     const order = new Order()
@@ -205,6 +228,11 @@ export class UnifiedTradingAccount {
   stageClosePosition(params: StageClosePositionParams): AddResult {
     const contract = new Contract()
     contract.aliceId = params.aliceId
+    const parsed = UnifiedTradingAccount.parseAliceId(params.aliceId)
+    if (parsed) {
+      contract.symbol = parsed.nativeKey
+      contract.localSymbol = parsed.nativeKey
+    }
     if (params.symbol) contract.symbol = params.symbol
 
     return this.git.add({
@@ -226,6 +254,10 @@ export class UnifiedTradingAccount {
 
   push(): Promise<PushResult> {
     return this.git.push()
+  }
+
+  reject(reason?: string): Promise<RejectResult> {
+    return this.git.reject(reason)
   }
 
   // ==================== Git queries ====================
@@ -294,28 +326,38 @@ export class UnifiedTradingAccount {
     return this.broker.getAccount()
   }
 
-  getPositions(): Promise<Position[]> {
-    return this.broker.getPositions()
+  async getPositions(): Promise<Position[]> {
+    const positions = await this.broker.getPositions()
+    for (const p of positions) this.stampAliceId(p.contract)
+    return positions
   }
 
-  getOrders(orderIds: string[]): Promise<OpenOrder[]> {
-    return this.broker.getOrders(orderIds)
+  async getOrders(orderIds: string[]): Promise<OpenOrder[]> {
+    const orders = await this.broker.getOrders(orderIds)
+    for (const o of orders) this.stampAliceId(o.contract)
+    return orders
   }
 
-  getQuote(contract: Contract): Promise<Quote> {
-    return this.broker.getQuote(contract)
+  async getQuote(contract: Contract): Promise<Quote> {
+    const quote = await this.broker.getQuote(contract)
+    this.stampAliceId(quote.contract)
+    return quote
   }
 
   getMarketClock(): Promise<MarketClock> {
     return this.broker.getMarketClock()
   }
 
-  searchContracts(pattern: string): Promise<ContractDescription[]> {
-    return this.broker.searchContracts(pattern)
+  async searchContracts(pattern: string): Promise<ContractDescription[]> {
+    const results = await this.broker.searchContracts(pattern)
+    for (const desc of results) this.stampAliceId(desc.contract)
+    return results
   }
 
-  getContractDetails(query: Contract): Promise<ContractDetails | null> {
-    return this.broker.getContractDetails(query)
+  async getContractDetails(query: Contract): Promise<ContractDetails | null> {
+    const details = await this.broker.getContractDetails(query)
+    if (details) this.stampAliceId(details.contract)
+    return details
   }
 
   getCapabilities(): AccountCapabilities {

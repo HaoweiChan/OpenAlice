@@ -1,10 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { api, type AppConfig, type AIProviderConfig } from '../api'
+import { api, type AppConfig, type AIProviderConfig, type LoginMethod } from '../api'
 import { SaveIndicator } from '../components/SaveIndicator'
 import { Section, Field, inputClass } from '../components/form'
 import { useAutoSave, type SaveStatus } from '../hooks/useAutoSave'
 import { PageHeader } from '../components/PageHeader'
 import { PageLoading } from '../components/StateViews'
+
+const LOGIN_METHODS: { value: LoginMethod; label: string; subtitle: string; hint: string }[] = [
+  { value: 'claudeai', label: 'Claude Pro/Max', subtitle: 'Use your Claude subscription', hint: 'Requires local Claude Code login (run claude login in terminal). No API key needed.' },
+  { value: 'api-key', label: 'API Key', subtitle: 'Pay per token', hint: 'Enter your Anthropic API key below. Billed per token to your API account.' },
+]
 
 const PROVIDER_MODELS: Record<string, { label: string; value: string }[]> = {
   anthropic: [
@@ -44,6 +49,31 @@ function detectCustomMode(provider: string, model: string): boolean {
   return !presets.some((p) => p.value === model)
 }
 
+function BackendCard({ selected, onClick, icon, title, description }: {
+  selected: boolean
+  onClick: () => void
+  icon: React.ReactNode
+  title: string
+  description: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex flex-col items-start gap-2 p-4 rounded-xl border-2 text-left transition-all cursor-pointer ${
+        selected
+          ? 'border-accent bg-accent-dim/50'
+          : 'border-border bg-bg hover:border-text-muted/30 hover:bg-bg-tertiary'
+      }`}
+    >
+      <div className={`${selected ? 'text-accent' : 'text-text-muted'}`}>{icon}</div>
+      <div>
+        <p className={`text-[13px] font-semibold ${selected ? 'text-accent' : 'text-text'}`}>{title}</p>
+        <p className="text-[11px] text-text-muted mt-0.5 leading-snug">{description}</p>
+      </div>
+    </button>
+  )
+}
+
 export function AIProviderPage() {
   const [config, setConfig] = useState<AppConfig | null>(null)
 
@@ -71,23 +101,31 @@ export function AIProviderPage() {
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6">
           <div className="max-w-[640px] space-y-5">
             {/* Backend */}
-            <Section id="backend" title="Backend" description="Runtime switch between AI backends. Claude Code calls the local CLI; Vercel AI SDK calls the API directly; Agent SDK uses the programmatic SDK. Changes take effect immediately.">
-              <div className="flex border border-border rounded-lg overflow-hidden">
-                {(['claude-code', 'vercel-ai-sdk', 'agent-sdk'] as const).map((b, i) => (
-                  <button
-                    key={b}
-                    onClick={() => handleBackendSwitch(b)}
-                    className={`flex-1 py-2 px-3 text-[13px] font-medium transition-colors ${
-                      config.aiProvider.backend === b
-                        ? 'bg-accent-dim text-accent'
-                        : 'bg-bg text-text-muted hover:bg-bg-tertiary hover:text-text'
-                    } ${i > 0 ? 'border-l border-border' : ''}`}
-                  >
-                    {{ 'claude-code': 'Claude Code', 'vercel-ai-sdk': 'Vercel AI SDK', 'agent-sdk': 'Agent SDK' }[b]}
-                  </button>
-                ))}
+            <Section id="backend" title="Backend" description="Changes take effect immediately.">
+              <div className="grid grid-cols-2 gap-3">
+                <BackendCard
+                  selected={config.aiProvider.backend === 'agent-sdk'}
+                  onClick={() => handleBackendSwitch('agent-sdk')}
+                  icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a4 4 0 0 1 4 4v1a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V6a4 4 0 0 1 4-4z" /><path d="M8 8v2a4 4 0 0 0 8 0V8" /><path d="M12 14v4" /><path d="M8 22h8" /><circle cx="9" cy="5.5" r="0.5" fill="currentColor" stroke="none" /><circle cx="15" cy="5.5" r="0.5" fill="currentColor" stroke="none" /></svg>}
+                  title="Claude"
+                  description="Local Claude Code login with full tool access"
+                />
+                <BackendCard
+                  selected={config.aiProvider.backend === 'vercel-ai-sdk'}
+                  onClick={() => handleBackendSwitch('vercel-ai-sdk')}
+                  icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>}
+                  title="Vercel AI SDK"
+                  description="Direct API calls to Anthropic, OpenAI, Google"
+                />
               </div>
             </Section>
+
+            {/* Auth mode (only for Agent SDK) */}
+            {config.aiProvider.backend === 'agent-sdk' && (
+              <Section id="auth" title="Authentication" description="Choose how Alice connects to Claude.">
+                <AgentSdkAuthForm aiProvider={config.aiProvider} onUpdate={(patch) => setConfig((c) => c ? { ...c, aiProvider: { ...c.aiProvider, ...patch } } : c)} />
+              </Section>
+            )}
 
             {/* Model (only for Vercel AI SDK) */}
             {config.aiProvider.backend === 'vercel-ai-sdk' && (
@@ -353,6 +391,88 @@ function ModelForm({ aiProvider }: { aiProvider: AIProviderConfig }) {
           </div>
         )}
       </div>
+    </>
+  )
+}
+
+// ==================== Agent SDK Auth Form ====================
+
+function AgentSdkAuthForm({ aiProvider, onUpdate }: { aiProvider: AIProviderConfig; onUpdate: (patch: Partial<AIProviderConfig>) => void }) {
+  const [loginMethod, setLoginMethod] = useState<LoginMethod>(aiProvider.loginMethod ?? 'api-key')
+  const [apiKey, setApiKey] = useState('')
+  const [keySaveStatus, setKeySaveStatus] = useState<SaveStatus>('idle')
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current) }, [])
+
+  const handleLoginMethodChange = async (method: LoginMethod) => {
+    setLoginMethod(method)
+    try {
+      await api.config.updateSection('aiProvider', { ...aiProvider, loginMethod: method })
+      onUpdate({ loginMethod: method })
+    } catch { /* revert on failure */ setLoginMethod(loginMethod) }
+  }
+
+  const handleSaveKey = async () => {
+    if (!apiKey) return
+    setKeySaveStatus('saving')
+    try {
+      const updatedKeys = { ...aiProvider.apiKeys, anthropic: apiKey }
+      await api.config.updateSection('aiProvider', { ...aiProvider, apiKeys: updatedKeys })
+      onUpdate({ apiKeys: updatedKeys })
+      setApiKey('')
+      setKeySaveStatus('saved')
+      if (savedTimer.current) clearTimeout(savedTimer.current)
+      savedTimer.current = setTimeout(() => setKeySaveStatus('idle'), 2000)
+    } catch { setKeySaveStatus('error') }
+  }
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        {LOGIN_METHODS.map((m) => (
+          <BackendCard
+            key={m.value}
+            selected={loginMethod === m.value}
+            onClick={() => handleLoginMethodChange(m.value)}
+            icon={m.value === 'claudeai'
+              ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><polyline points="10 17 15 12 10 7" /><line x1="15" y1="12" x2="3" y2="12" /></svg>
+              : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>}
+            title={m.label}
+            description={m.subtitle}
+          />
+        ))}
+      </div>
+      <p className="text-[11px] text-text-muted mt-2">
+        {LOGIN_METHODS.find((m) => m.value === loginMethod)?.hint}
+      </p>
+
+      {loginMethod === 'api-key' && (
+        <Field label="Anthropic API Key">
+          <div className="relative">
+            <input
+              className={inputClass}
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={aiProvider.apiKeys?.anthropic ? '(configured)' : 'sk-ant-...'}
+            />
+            {aiProvider.apiKeys?.anthropic && (
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-green">active</span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 mt-2">
+            <button
+              onClick={handleSaveKey}
+              disabled={!apiKey || keySaveStatus === 'saving'}
+              className="bg-user-bubble text-white rounded-lg px-4 py-2 text-[13px] font-medium cursor-pointer transition-opacity hover:opacity-85 disabled:opacity-50"
+            >
+              Save Key
+            </button>
+            <SaveIndicator status={keySaveStatus} onRetry={handleSaveKey} />
+          </div>
+        </Field>
+      )}
     </>
   )
 }

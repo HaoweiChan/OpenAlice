@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import Decimal from 'decimal.js'
-import { Contract, Order, UNSET_DOUBLE, UNSET_DECIMAL } from '@traderalice/ibkr'
-import { computeRealizedPnL } from './alpaca-pnl.js'
+import { Contract, Order, UNSET_DOUBLE } from '@traderalice/ibkr'
 import { AlpacaBroker } from './AlpacaBroker.js'
 import '../../contract-ext.js'
 
@@ -16,146 +15,12 @@ vi.mock('@alpacahq/alpaca-trade-api', () => {
     this.cancelOrder = vi.fn()
     this.closePosition = vi.fn()
     this.getOrders = vi.fn()
+    this.getOrder = vi.fn()
     this.getSnapshot = vi.fn()
     this.getClock = vi.fn()
     this.getAccountActivities = vi.fn()
   })
   return { default: MockAlpaca }
-})
-
-/** Helper to build a fill activity record. */
-function fill(symbol: string, side: 'buy' | 'sell', qty: number, price: number, index = 0) {
-  return {
-    activity_type: 'FILL' as const,
-    symbol,
-    side,
-    qty: String(qty),
-    price: String(price),
-    cum_qty: String(qty),
-    leaves_qty: '0',
-    transaction_time: `2025-01-01T00:00:0${index}Z`,
-    order_id: `order-${index}`,
-    type: 'fill',
-  }
-}
-
-describe('computeRealizedPnL', () => {
-  it('returns 0 for empty fills', () => {
-    expect(computeRealizedPnL([])).toBe(0)
-  })
-
-  it('returns 0 when only buys (no closes)', () => {
-    const fills = [
-      fill('AAPL', 'buy', 10, 150, 0),
-      fill('GOOG', 'buy', 5, 2800, 1),
-    ]
-    expect(computeRealizedPnL(fills)).toBe(0)
-  })
-
-  it('computes profit on simple buy then sell', () => {
-    const fills = [
-      fill('AAPL', 'buy', 10, 150, 0),
-      fill('AAPL', 'sell', 10, 160, 1),
-    ]
-    // (160 - 150) * 10 = 100
-    expect(computeRealizedPnL(fills)).toBe(100)
-  })
-
-  it('computes loss on simple buy then sell', () => {
-    const fills = [
-      fill('AAPL', 'buy', 10, 150, 0),
-      fill('AAPL', 'sell', 10, 140, 1),
-    ]
-    // (140 - 150) * 10 = -100
-    expect(computeRealizedPnL(fills)).toBe(-100)
-  })
-
-  it('handles partial close (sell less than bought)', () => {
-    const fills = [
-      fill('AAPL', 'buy', 10, 150, 0),
-      fill('AAPL', 'sell', 4, 160, 1),
-    ]
-    // (160 - 150) * 4 = 40
-    expect(computeRealizedPnL(fills)).toBe(40)
-  })
-
-  it('handles FIFO across multiple buy lots', () => {
-    const fills = [
-      fill('AAPL', 'buy', 5, 100, 0),
-      fill('AAPL', 'buy', 5, 120, 1),
-      fill('AAPL', 'sell', 7, 130, 2),
-    ]
-    // FIFO: first lot 5@100 -> (130-100)*5 = 150
-    //        second lot 2@120 -> (130-120)*2 = 20
-    // total = 170
-    expect(computeRealizedPnL(fills)).toBe(170)
-  })
-
-  it('handles multiple symbols independently', () => {
-    const fills = [
-      fill('AAPL', 'buy', 10, 150, 0),
-      fill('GOOG', 'buy', 2, 2800, 1),
-      fill('AAPL', 'sell', 10, 160, 2),
-      fill('GOOG', 'sell', 2, 2700, 3),
-    ]
-    // AAPL: (160-150)*10 = 100
-    // GOOG: (2700-2800)*2 = -200
-    // total = -100
-    expect(computeRealizedPnL(fills)).toBe(-100)
-  })
-
-  it('handles short selling (sell then buy)', () => {
-    const fills = [
-      fill('AAPL', 'sell', 10, 160, 0),
-      fill('AAPL', 'buy', 10, 150, 1),
-    ]
-    // Short: entry 160, exit 150 -> (160-150)*10 = 100 profit
-    expect(computeRealizedPnL(fills)).toBe(100)
-  })
-
-  it('handles short selling at a loss', () => {
-    const fills = [
-      fill('AAPL', 'sell', 10, 150, 0),
-      fill('AAPL', 'buy', 10, 160, 1),
-    ]
-    // Short: entry 150, exit 160 -> (150-160)*10 = -100 loss
-    expect(computeRealizedPnL(fills)).toBe(-100)
-  })
-
-  it('handles multiple round trips', () => {
-    const fills = [
-      fill('AAPL', 'buy', 10, 100, 0),
-      fill('AAPL', 'sell', 10, 110, 1),
-      fill('AAPL', 'buy', 10, 105, 2),
-      fill('AAPL', 'sell', 10, 115, 3),
-    ]
-    // Trip 1: (110-100)*10 = 100
-    // Trip 2: (115-105)*10 = 100
-    // total = 200
-    expect(computeRealizedPnL(fills)).toBe(200)
-  })
-
-  it('rounds to cents', () => {
-    const fills = [
-      fill('AAPL', 'buy', 3, 10.333, 0),
-      fill('AAPL', 'sell', 3, 10.667, 1),
-    ]
-    // (10.667 - 10.333) * 3 = 1.002
-    expect(computeRealizedPnL(fills)).toBe(1)
-  })
-
-  it('accumulates many small fills without IEEE 754 drift', () => {
-    const fills: ReturnType<typeof fill>[] = []
-    // 100 buys of 0.01 @ 99.99
-    for (let i = 0; i < 100; i++) {
-      fills.push(fill('AAPL', 'buy', 0.01, 99.99, i))
-    }
-    // 1 sell of 1.0 @ 100.01
-    fills.push(fill('AAPL', 'sell', 1.0, 100.01, 100))
-    // realized = 1.0 * (100.01 - 99.99) = 0.02
-    // With floats this would be 0.020000000000003 or similar
-    expect(computeRealizedPnL(fills)).toBe(0.02)
-  })
 })
 
 // ==================== AlpacaBroker ====================
@@ -340,7 +205,6 @@ describe('AlpacaBroker — getContractDetails()', () => {
     const details = await acc.getContractDetails(query)
     expect(details).not.toBeNull()
     expect(details!.contract.symbol).toBe('AAPL')
-    expect(details!.contract.aliceId).toBe('alpaca-AAPL')
     expect(details!.validExchanges).toBe('SMART,NYSE,NASDAQ,ARCA')
     expect(details!.orderTypes).toBe('MKT,LMT,STP,STP LMT,TRAIL')
     expect(details!.stockType).toBe('COMMON')
@@ -523,7 +387,6 @@ describe('AlpacaBroker — getAccount()', () => {
         { symbol: 'AAPL', side: 'long', qty: '10', avg_entry_price: '150', current_price: '160', market_value: '1600', unrealized_pl: '100.00', unrealized_plpc: '0.0667', cost_basis: '1500' },
         { symbol: 'GOOG', side: 'long', qty: '5', avg_entry_price: '2800', current_price: '2850', market_value: '14250', unrealized_pl: '250.00', unrealized_plpc: '0.0179', cost_basis: '14000' },
       ]),
-      getAccountActivities: vi.fn().mockResolvedValue([]),
     }
 
     const info = await acc.getAccount()
@@ -531,7 +394,29 @@ describe('AlpacaBroker — getAccount()', () => {
     expect(info.totalCashValue).toBe(50000)
     expect(info.buyingPower).toBe(200000)
     expect(info.unrealizedPnL).toBe(350) // 100 + 250
+    expect(info.realizedPnL).toBeUndefined()
     expect(info.dayTradesRemaining).toBe(2) // 3 - 1
+  })
+})
+
+describe('AlpacaBroker — getAccount() precision', () => {
+  it('aggregates unrealizedPnL with Decimal to avoid float drift', async () => {
+    const acc = new AlpacaBroker({ apiKey: 'k', secretKey: 's', paper: true })
+    ;(acc as any).client = {
+      getAccount: vi.fn().mockResolvedValue({
+        equity: '100000.00', cash: '50000.00', buying_power: '200000.00',
+        portfolio_value: '100000.00', daytrade_count: 0, daytrading_buying_power: '400000.00',
+      }),
+      getPositions: vi.fn().mockResolvedValue([
+        { symbol: 'A', side: 'long', qty: '1', avg_entry_price: '10', current_price: '10', market_value: '10', unrealized_pl: '0.1', unrealized_plpc: '0', cost_basis: '10' },
+        { symbol: 'B', side: 'long', qty: '1', avg_entry_price: '10', current_price: '10', market_value: '10', unrealized_pl: '0.2', unrealized_plpc: '0', cost_basis: '10' },
+        { symbol: 'C', side: 'long', qty: '1', avg_entry_price: '10', current_price: '10', market_value: '10', unrealized_pl: '0.3', unrealized_plpc: '0', cost_basis: '10' },
+      ]),
+    }
+
+    const info = await acc.getAccount()
+    // 0.1 + 0.2 + 0.3 = 0.6 (with floats: 0.6000000000000001)
+    expect(info.unrealizedPnL).toBe(0.6)
   })
 })
 
@@ -572,7 +457,6 @@ describe('AlpacaBroker — getOrder()', () => {
 
   it('fetches a specific order by ID', async () => {
     const acc = new AlpacaBroker({ apiKey: 'k', secretKey: 's', paper: true })
-    // Bypass init — inject mock client directly
     ;(acc as any).client = {
       getOrder: vi.fn().mockResolvedValue({
         id: 'ord-200', symbol: 'AAPL', side: 'buy', qty: '10', notional: null,
@@ -581,12 +465,25 @@ describe('AlpacaBroker — getOrder()', () => {
         status: 'filled', reject_reason: null,
       }),
     }
-    // No ensureInit in AlpacaBroker — client is enough
 
     const result = await acc.getOrder('ord-200')
     expect(result).not.toBeNull()
     expect(result!.order.action).toBe('BUY')
     expect(result!.orderState.status).toBe('Filled')
+  })
+
+  it('passes orderId as string argument, not object', async () => {
+    const acc = new AlpacaBroker({ apiKey: 'k', secretKey: 's', paper: true })
+    const getOrderMock = vi.fn().mockResolvedValue({
+      id: 'b0b6dd9d-8b9b-4c5a-9e3f-1a2b3c4d5e6f', symbol: 'AAPL', side: 'buy',
+      qty: '1', notional: null, type: 'market', limit_price: null, stop_price: null,
+      time_in_force: 'day', extended_hours: false, status: 'filled', reject_reason: null,
+    })
+    ;(acc as any).client = { getOrder: getOrderMock }
+
+    await acc.getOrder('b0b6dd9d-8b9b-4c5a-9e3f-1a2b3c4d5e6f')
+    // Must pass UUID string directly, NOT { order_id: ... }
+    expect(getOrderMock).toHaveBeenCalledWith('b0b6dd9d-8b9b-4c5a-9e3f-1a2b3c4d5e6f')
   })
 
   it('returns null when order not found', async () => {
@@ -597,6 +494,22 @@ describe('AlpacaBroker — getOrder()', () => {
 
     const result = await acc.getOrder('nonexistent')
     expect(result).toBeNull()
+  })
+
+  it('mapOpenOrder sets orderId to 0 for UUID order IDs', async () => {
+    const acc = new AlpacaBroker({ apiKey: 'k', secretKey: 's', paper: true })
+    ;(acc as any).client = {
+      getOrder: vi.fn().mockResolvedValue({
+        id: 'b0b6dd9d-8b9b-4c5a-9e3f-1a2b3c4d5e6f', symbol: 'AAPL', side: 'buy',
+        qty: '10', notional: null, type: 'market', limit_price: null, stop_price: null,
+        time_in_force: 'day', extended_hours: false, status: 'filled', reject_reason: null,
+      }),
+    }
+
+    const result = await acc.getOrder('b0b6dd9d-8b9b-4c5a-9e3f-1a2b3c4d5e6f')
+    expect(result).not.toBeNull()
+    // IBKR orderId is number — UUID can't fit, so it should be 0
+    expect(result!.order.orderId).toBe(0)
   })
 })
 

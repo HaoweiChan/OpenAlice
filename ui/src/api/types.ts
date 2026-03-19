@@ -7,10 +7,13 @@ export interface VercelAiSdkOverride {
   apiKey?: string
 }
 
+export type LoginMethod = 'api-key' | 'claudeai'
+
 export interface AgentSdkOverride {
   model?: string
   baseUrl?: string
   apiKey?: string
+  loginMethod?: LoginMethod
 }
 
 export interface WebChannel {
@@ -61,6 +64,7 @@ export interface AIProviderConfig {
   provider: string
   model: string
   baseUrl?: string
+  loginMethod?: LoginMethod
   apiKeys: { anthropic?: string; openai?: string; google?: string }
 }
 
@@ -196,6 +200,38 @@ export interface ReconnectResult {
   success: boolean
   error?: string
   message?: string
+}
+
+// ==================== Wallet Status / Push ====================
+
+export interface WalletOperation {
+  action: 'placeOrder' | 'modifyOrder' | 'closePosition' | 'cancelOrder' | 'syncOrders'
+  contract?: { aliceId?: string; symbol?: string; localSymbol?: string }
+  order?: { action?: string; orderType?: string; totalQuantity?: number | string; cashQty?: number | string; lmtPrice?: number | string; auxPrice?: number | string }
+  orderId?: string
+  quantity?: string
+  [key: string]: unknown
+}
+
+export interface WalletStatus {
+  staged: WalletOperation[]
+  pendingMessage: string | null
+  head: string | null
+  commitCount: number
+}
+
+export interface WalletRejectResult {
+  hash: string
+  message: string
+  operationCount: number
+}
+
+export interface WalletPushResult {
+  hash: string
+  message: string
+  operationCount: number
+  submitted: Array<{ action: string; success: boolean; orderId?: string; status: string; error?: string }>
+  rejected: Array<{ action: string; success: boolean; error?: string; status: string }>
 }
 
 // ==================== Tool Call Log ====================

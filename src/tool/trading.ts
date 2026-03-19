@@ -254,7 +254,7 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
     }),
 
     modifyOrder: tool({
-      description: 'Stage an order modification (will execute on tradingPush).',
+      description: 'Stage an order modification.\nNOTE: This stages the operation. Call tradingCommit + tradingPush to execute.',
       inputSchema: z.object({
         source: z.string().describe(sourceDesc(true)),
         orderId: z.string().describe('Order ID to modify'),
@@ -271,7 +271,7 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
     }),
 
     closePosition: tool({
-      description: 'Stage a position close (will execute on tradingPush).',
+      description: 'Stage a position close.\nNOTE: This stages the operation. Call tradingCommit + tradingPush to execute.',
       inputSchema: z.object({
         source: z.string().describe(sourceDesc(true)),
         aliceId: z.string().describe('Contract identifier'),
@@ -282,7 +282,7 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
     }),
 
     cancelOrder: tool({
-      description: 'Stage an order cancellation (will execute on tradingPush).',
+      description: 'Stage an order cancellation.\nNOTE: This stages the operation. Call tradingCommit + tradingPush to execute.',
       inputSchema: z.object({
         source: z.string().describe(sourceDesc(true)),
         orderId: z.string().describe('Order ID to cancel'),
@@ -309,19 +309,30 @@ NOTE: This stages the operation. Call tradingCommit + tradingPush to execute.`,
     }),
 
     tradingPush: tool({
-      description: 'Execute all committed trading operations (like "git push"). Must call tradingCommit first.',
+      description: 'Trading push requires manual approval — call tradingStatus to show the user what is pending, then tell them to approve in the UI.',
       inputSchema: z.object({
-        source: z.string().optional().describe(sourceDesc(false, 'If omitted, pushes all committed accounts.')),
+        source: z.string().optional().describe(sourceDesc(false, 'If omitted, checks all accounts.')),
       }),
       execute: async ({ source }) => {
         const targets = manager.resolve(source)
-        const results: Array<Record<string, unknown>> = []
-        for (const uta of targets) {
-          if (!uta.status().pendingMessage) continue
-          results.push({ source: uta.id, ...await uta.push() })
+        const pending = targets.filter(uta => uta.status().pendingMessage)
+        if (pending.length === 0) {
+          const uncommitted = targets.filter(uta => uta.status().staged.length > 0)
+          if (uncommitted.length > 0) {
+            return {
+              error: 'You have staged operations that are NOT committed yet. Call tradingCommit first, then tradingPush.',
+              uncommitted: uncommitted.map(uta => ({ source: uta.id, staged: uta.status().staged })),
+            }
+          }
+          return { message: 'No committed operations to push.' }
         }
-        if (results.length === 0) return { message: 'No committed operations to push.' }
-        return results.length === 1 ? results[0] : results
+        return {
+          message: 'Push requires manual approval. The user can approve pending operations in the UI.',
+          pending: pending.map(uta => ({
+            source: uta.id,
+            ...uta.status(),
+          })),
+        }
       },
     }),
 

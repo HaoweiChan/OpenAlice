@@ -49,7 +49,6 @@ export interface CallRecord {
 
 export interface MockBrokerOptions {
   id?: string
-  provider?: string
   label?: string
   cash?: number
   accountInfo?: Partial<AccountInfo>
@@ -125,7 +124,6 @@ export function makePlaceOrderResult(overrides: Partial<PlaceOrderResult> = {}):
 
 export class MockBroker implements IBroker {
   readonly id: string
-  readonly provider: string
   readonly label: string
 
   private _positions = new Map<string, InternalPosition>()
@@ -139,7 +137,6 @@ export class MockBroker implements IBroker {
 
   constructor(options: MockBrokerOptions = {}) {
     this.id = options.id ?? 'mock-paper'
-    this.provider = options.provider ?? 'mock'
     this.label = options.label ?? 'Mock Paper Account'
     this._cash = new Decimal(options.cash ?? 100_000)
     if (options.accountInfo) {

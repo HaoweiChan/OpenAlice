@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api'
+import type { LoginMethod } from '../api/types'
 import type { ChannelListItem } from '../api/channels'
 import type { ToolInfo } from '../api/tools'
 
@@ -28,6 +29,7 @@ export function ChannelConfigModal({ channel, onClose, onSaved }: ChannelConfigM
   const [aModel, setAModel] = useState(channel.agentSdk?.model ?? '')
   const [aBaseUrl, setABaseUrl] = useState(channel.agentSdk?.baseUrl ?? '')
   const [aApiKey, setAApiKey] = useState(channel.agentSdk?.apiKey ?? '')
+  const [aLoginMethod, setALoginMethod] = useState<LoginMethod | ''>(channel.agentSdk?.loginMethod ?? '')
 
   const showVercelConfig = provider === 'vercel-ai-sdk'
   const showAgentSdkConfig = provider === 'agent-sdk'
@@ -49,11 +51,12 @@ export function ChannelConfigModal({ channel, onClose, onSaved }: ChannelConfigM
           }
         : undefined
 
-      const agentSdk = showAgentSdkConfig && aModel
+      const agentSdk = showAgentSdkConfig && (aModel || aLoginMethod)
         ? {
-            model: aModel,
+            ...(aModel ? { model: aModel } : {}),
             ...(aBaseUrl ? { baseUrl: aBaseUrl } : {}),
             ...(aApiKey ? { apiKey: aApiKey } : {}),
+            ...(aLoginMethod ? { loginMethod: aLoginMethod } : {}),
           }
         : undefined
 
@@ -146,9 +149,8 @@ export function ChannelConfigModal({ channel, onClose, onSaved }: ChannelConfigM
               className={inputClass}
             >
               <option value="">Default (global)</option>
+              <option value="agent-sdk">Claude</option>
               <option value="vercel-ai-sdk">Vercel AI SDK</option>
-              <option value="claude-code">Claude Code</option>
-              <option value="agent-sdk">Agent SDK</option>
             </select>
           </div>
 
@@ -215,7 +217,20 @@ export function ChannelConfigModal({ channel, onClose, onSaved }: ChannelConfigM
           {/* Agent SDK config — only when provider is agent-sdk */}
           {showAgentSdkConfig && (
             <div className="rounded-lg border border-border/50 bg-bg-secondary/30 p-3 space-y-3">
-              <p className="text-xs font-medium text-text-muted">Agent SDK Override</p>
+              <p className="text-xs font-medium text-text-muted">Claude Override</p>
+
+              <div>
+                <label className="block text-xs text-text-muted/70 mb-1">Login Method</label>
+                <select
+                  value={aLoginMethod}
+                  onChange={(e) => setALoginMethod((e.target.value || '') as LoginMethod | '')}
+                  className={inputClass}
+                >
+                  <option value="">Default (global)</option>
+                  <option value="api-key">API Key</option>
+                  <option value="claudeai">Claude Pro/Max</option>
+                </select>
+              </div>
 
               <div>
                 <label className="block text-xs text-text-muted/70 mb-1">Model</label>

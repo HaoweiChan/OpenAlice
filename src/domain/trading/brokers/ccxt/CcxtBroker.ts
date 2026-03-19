@@ -43,10 +43,14 @@ function ibkrOrderTypeToCcxt(orderType: string): string {
   }
 }
 
-export class CcxtBroker implements IBroker {
+export interface CcxtBrokerMeta {
+  exchange: string  // "bybit", "binance", "okx", etc.
+}
+
+export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
   readonly id: string
-  readonly provider: string  // "ccxt" or the specific exchange name
   readonly label: string
+  readonly meta: CcxtBrokerMeta
 
   private exchange: Exchange
   private exchangeName: string
@@ -58,7 +62,7 @@ export class CcxtBroker implements IBroker {
 
   constructor(config: CcxtBrokerConfig) {
     this.exchangeName = config.exchange
-    this.provider = config.exchange  // use exchange name as provider (e.g. "bybit", "binance")
+    this.meta = { exchange: config.exchange }
     this.id = config.id ?? `${config.exchange}-main`
     this.label = config.label ?? `${config.exchange.charAt(0).toUpperCase() + config.exchange.slice(1)} ${config.sandbox ? 'Testnet' : 'Live'}`
     this.readOnly = !config.apiKey || !config.apiSecret
@@ -355,16 +359,16 @@ export class CcxtBroker implements IBroker {
     this.ensureWritable()
 
     const positions = await this.getPositions()
+    const ccxtSymbol = contractToCcxt(contract, this.exchange.markets as Record<string, CcxtMarket>, this.exchangeName)
     const symbol = contract.symbol?.toUpperCase()
-    const aliceId = contract.aliceId
 
     const pos = positions.find(p =>
-      (aliceId && p.contract.aliceId === aliceId) ||
+      (ccxtSymbol && p.contract.localSymbol === ccxtSymbol) ||
       (symbol && p.contract.symbol === symbol),
     )
 
     if (!pos) {
-      return { success: false, error: `No open position for ${aliceId ?? symbol ?? 'unknown'}` }
+      return { success: false, error: `No open position for ${ccxtSymbol ?? symbol ?? 'unknown'}` }
     }
 
     const order = new Order()

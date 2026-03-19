@@ -13,11 +13,15 @@ const engineSchema = z.object({
   port: z.number().int().positive().default(3000),
 })
 
+const loginMethodSchema = z.enum(['api-key', 'claudeai'])
+
 export const aiProviderSchema = z.object({
   backend: z.enum(['claude-code', 'vercel-ai-sdk', 'agent-sdk']).default('claude-code'),
   provider: z.string().default('anthropic'),
   model: z.string().default('claude-sonnet-4-6'),
   baseUrl: z.string().min(1).optional(),
+  /** Authentication method for Agent SDK: api-key (default), oauth (Console), claudeai (Pro/Max). */
+  loginMethod: loginMethodSchema.default('api-key'),
   apiKeys: z.object({
     anthropic: z.string().optional(),
     openai: z.string().optional(),
@@ -180,6 +184,7 @@ export const agentSdkOverrideSchema = z.object({
   model: z.string().optional(),
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
+  loginMethod: loginMethodSchema.optional(),
 })
 
 export const webSubchannelSchema = z.object({
@@ -316,6 +321,14 @@ export async function loadConfig(): Promise<Config> {
     await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(migrated, null, 2) + '\n')
     await removeJsonFile('model.json')
     await removeJsonFile('api-keys.json')
+  }
+
+  // ---------- Migration: claude-code backend → agent-sdk + claudeai ----------
+  if (aiProviderRaw && (aiProviderRaw as Record<string, unknown>).backend === 'claude-code') {
+    const patched = { ...(aiProviderRaw as Record<string, unknown>), backend: 'agent-sdk', loginMethod: 'claudeai' }
+    raws[6] = patched
+    await mkdir(CONFIG_DIR, { recursive: true })
+    await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(patched, null, 2) + '\n')
   }
 
   // ---------- Migration: consolidate old telegram.json + engine port fields ----------

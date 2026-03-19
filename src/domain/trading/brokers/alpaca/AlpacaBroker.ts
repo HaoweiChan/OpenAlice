@@ -28,11 +28,9 @@ import type {
   AlpacaPositionRaw,
   AlpacaOrderRaw,
   AlpacaSnapshotRaw,
-  AlpacaFillActivityRaw,
   AlpacaClockRaw,
 } from './alpaca-types.js'
 import { makeContract, resolveSymbol, mapAlpacaOrderStatus, makeOrderState } from './alpaca-contracts.js'
-import { computeRealizedPnL } from './alpaca-pnl.js'
 
 /** Map IBKR orderType codes to Alpaca API order type strings. */
 function ibkrOrderTypeToAlpaca(orderType: string): string {
@@ -60,15 +58,10 @@ function ibkrTifToAlpaca(tif: string): string {
 
 export class AlpacaBroker implements IBroker {
   readonly id: string
-  readonly provider = 'alpaca'
   readonly label: string
 
   private client!: InstanceType<typeof Alpaca>
   private readonly config: AlpacaBrokerConfig
-
-  /** Cached realized PnL from FILL activities (FIFO lot matching) */
-  private realizedPnLCache: { value: number; updatedAt: number } | null = null
-  private static readonly REALIZED_PNL_TTL_MS = 60_000
 
   constructor(config: AlpacaBrokerConfig) {
     this.config = config
@@ -134,16 +127,16 @@ export class AlpacaBroker implements IBroker {
     // Alpaca tickers are unique for stocks — pattern is treated as exact ticker match
     const ticker = pattern.toUpperCase()
     const desc = new ContractDescription()
-    desc.contract = makeContract(ticker, this.provider)
+    desc.contract = makeContract(ticker)
     return [desc]
   }
 
   async getContractDetails(query: Contract): Promise<ContractDetails | null> {
-    const symbol = resolveSymbol(query, this.provider)
+    const symbol = resolveSymbol(query)
     if (!symbol) return null
 
     const details = new ContractDetails()
-    details.contract = makeContract(symbol, this.provider)
+    details.contract = makeContract(symbol)
     details.validExchanges = 'SMART,NYSE,NASDAQ,ARCA'
     details.orderTypes = 'MKT,LMT,STP,STP LMT,TRAIL'
     details.stockType = 'COMMON'
@@ -153,7 +146,7 @@ export class AlpacaBroker implements IBroker {
   // ---- Trading operations ----
 
   async placeOrder(contract: Contract, order: Order): Promise<PlaceOrderResult> {
-    const symbol = resolveSymbol(contract, this.provider)
+    const symbol = resolveSymbol(contract)
     if (!symbol) {
       return { success: false, error: 'Cannot resolve contract to Alpaca symbol' }
     }
@@ -207,7 +200,6 @@ export class AlpacaBroker implements IBroker {
       if (changes.tif) patch.time_in_force = ibkrTifToAlpaca(changes.tif)
 
       const result = await this.client.replaceOrder(orderId, patch) as AlpacaOrderRaw
-      const isFilled = result.status === 'filled'
 
       return {
         success: true,
@@ -229,7 +221,7 @@ export class AlpacaBroker implements IBroker {
   }
 
   async closePosition(contract: Contract, quantity?: Decimal): Promise<PlaceOrderResult> {
-    const symbol = resolveSymbol(contract, this.provider)
+    const symbol = resolveSymbol(contract)
     if (!symbol) {
       return { success: false, error: 'Cannot resolve contract to Alpaca symbol' }
     }
@@ -265,20 +257,21 @@ export class AlpacaBroker implements IBroker {
   // ---- Queries ----
 
   async getAccount(): Promise<AccountInfo> {
-    const [account, positions, realizedPnL] = await Promise.all([
+    const [account, positions] = await Promise.all([
       this.client.getAccount() as Promise<AlpacaBrokerRaw>,
       this.client.getPositions() as Promise<AlpacaPositionRaw[]>,
-      this.getRealizedPnL(),
     ])
 
-    // Alpaca account API doesn't provide unrealizedPnL — aggregate from positions
-    const unrealizedPnL = positions.reduce((sum, p) => sum + parseFloat(p.unrealized_pl), 0)
+    // Alpaca account API doesn't provide unrealizedPnL — aggregate from positions with Decimal
+    const unrealizedPnL = positions.reduce(
+      (sum, p) => sum.plus(new Decimal(p.unrealized_pl)),
+      new Decimal(0),
+    ).toNumber()
 
     return {
       netLiquidation: parseFloat(account.equity),
       totalCashValue: parseFloat(account.cash),
       unrealizedPnL,
-      realizedPnL,
       buyingPower: parseFloat(account.buying_power),
       dayTradesRemaining: account.daytrade_count != null ? Math.max(0, 3 - account.daytrade_count) : undefined,
     }
@@ -288,7 +281,7 @@ export class AlpacaBroker implements IBroker {
     const raw = await this.client.getPositions() as AlpacaPositionRaw[]
 
     return raw.map(p => ({
-      contract: makeContract(p.symbol, this.provider),
+      contract: makeContract(p.symbol),
       side: p.side === 'long' ? 'long' as const : 'short' as const,
       quantity: new Decimal(p.qty),
       avgCost: parseFloat(p.avg_entry_price),
@@ -311,7 +304,7 @@ export class AlpacaBroker implements IBroker {
 
   async getOrder(orderId: string): Promise<OpenOrder | null> {
     try {
-      const raw = await this.client.getOrder({ order_id: orderId }) as AlpacaOrderRaw
+      const raw = await this.client.getOrder(orderId) as AlpacaOrderRaw
       return this.mapOpenOrder(raw)
     } catch {
       return null
@@ -319,13 +312,13 @@ export class AlpacaBroker implements IBroker {
   }
 
   async getQuote(contract: Contract): Promise<Quote> {
-    const symbol = resolveSymbol(contract, this.provider)
+    const symbol = resolveSymbol(contract)
     if (!symbol) throw new Error('Cannot resolve contract to Alpaca symbol')
 
     const snapshot = await this.client.getSnapshot(symbol) as AlpacaSnapshotRaw
 
     return {
-      contract: makeContract(symbol, this.provider),
+      contract: makeContract(symbol),
       last: snapshot.LatestTrade.Price,
       bid: snapshot.LatestQuote.BidPrice,
       ask: snapshot.LatestQuote.AskPrice,
@@ -353,62 +346,11 @@ export class AlpacaBroker implements IBroker {
     }
   }
 
-  // ---- Realized PnL ----
-
-  /**
-   * Get realized PnL from Alpaca FILL activities with TTL cache.
-   * Fetches all historical fills, matches buys against sells per symbol using FIFO,
-   * and sums the realized profit/loss.
-   */
-  private async getRealizedPnL(): Promise<number> {
-    const now = Date.now()
-    if (this.realizedPnLCache && (now - this.realizedPnLCache.updatedAt) < AlpacaBroker.REALIZED_PNL_TTL_MS) {
-      return this.realizedPnLCache.value
-    }
-
-    try {
-      const fills = await this.fetchAllFills()
-      const value = computeRealizedPnL(fills)
-      this.realizedPnLCache = { value, updatedAt: now }
-      return value
-    } catch (err) {
-      // On error, return cached value if available, otherwise 0
-      console.warn(`AlpacaBroker[${this.id}]: failed to fetch FILL activities:`, err)
-      return this.realizedPnLCache?.value ?? 0
-    }
-  }
-
-  /** Paginate through all FILL activities (newest first by default). */
-  private async fetchAllFills(): Promise<AlpacaFillActivityRaw[]> {
-    const all: AlpacaFillActivityRaw[] = []
-    let pageToken: string | undefined
-
-    for (;;) {
-      const page = await this.client.getAccountActivities({
-        activityTypes: 'FILL',
-        pageSize: 100,
-        pageToken,
-        direction: 'asc', // oldest first → natural FIFO order
-        until: undefined,
-        after: undefined,
-        date: undefined,
-      }) as AlpacaFillActivityRaw[]
-
-      if (!page || page.length === 0) break
-      all.push(...page)
-
-      // Alpaca pagination: last item's id is the next page_token
-      if (page.length < 100) break
-      pageToken = (page[page.length - 1] as unknown as { id: string }).id
-    }
-
-    return all
-  }
 
   // ---- Internal ----
 
   private mapOpenOrder(o: AlpacaOrderRaw): OpenOrder {
-    const contract = makeContract(o.symbol, this.provider)
+    const contract = makeContract(o.symbol)
 
     const order = new Order()
     order.action = o.side.toUpperCase() // buy → BUY
@@ -418,7 +360,9 @@ export class AlpacaBroker implements IBroker {
     if (o.stop_price) order.auxPrice = parseFloat(o.stop_price)
     if (o.time_in_force) order.tif = o.time_in_force.toUpperCase()
     if (o.extended_hours) order.outsideRth = true
-    order.orderId = parseInt(o.id, 10) || 0
+    // Alpaca order IDs are UUIDs — IBKR's orderId field is number, so leave at default 0.
+    // The real string ID is preserved through PlaceOrderResult.orderId and getOrder(string).
+    order.orderId = 0
 
     return {
       contract,

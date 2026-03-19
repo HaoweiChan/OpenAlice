@@ -57,7 +57,7 @@ export interface AccountInfo {
   netLiquidation: number
   totalCashValue: number
   unrealizedPnL: number
-  realizedPnL: number
+  realizedPnL?: number
   buyingPower?: number
   initMarginReq?: number
   maintMarginReq?: number
@@ -111,15 +111,15 @@ export interface AccountCapabilities {
 
 // ==================== IBroker ====================
 
-export interface IBroker {
+export interface IBroker<TMeta = unknown> {
   /** Unique account ID, e.g. "alpaca-paper", "bybit-main". */
   readonly id: string
 
-  /** Provider name, e.g. "alpaca", "ccxt". */
-  readonly provider: string
-
   /** User-facing display name. */
   readonly label: string
+
+  /** Broker-specific metadata. Generic allows typed access in implementations. */
+  readonly meta?: TMeta
 
   // ---- Lifecycle ----
 

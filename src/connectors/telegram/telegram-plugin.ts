@@ -6,8 +6,8 @@ import type { Plugin, EngineContext, MediaAttachment } from '../../core/types.js
 import type { TelegramConfig, ParsedMessage } from './types.js'
 import { buildParsedMessage } from './helpers.js'
 import { MediaGroupMerger } from './media-group.js'
-import { askClaudeCode } from '../../ai-providers/claude-code/index.js'
-import type { ClaudeCodeConfig } from '../../ai-providers/claude-code/index.js'
+import { askAgentSdk } from '../../ai-providers/agent-sdk/query.js'
+import type { AgentSdkConfig } from '../../ai-providers/agent-sdk/query.js'
 import { SessionStore } from '../../core/session'
 import { forceCompact } from '../../core/compaction'
 import { readAIBackend, writeAIBackend, type AIBackend } from '../../core/config'
@@ -23,7 +23,7 @@ const BACKEND_LABELS: Record<AIBackend, string> = {
 export class TelegramPlugin implements Plugin {
   name = 'telegram'
   private config: TelegramConfig
-  private claudeCodeConfig: ClaudeCodeConfig
+  private agentSdkConfig: AgentSdkConfig
   private bot: Bot | null = null
   private connectorCenter: ConnectorCenter | null = null
   private merger: MediaGroupMerger | null = null
@@ -37,20 +37,20 @@ export class TelegramPlugin implements Plugin {
 
   constructor(
     config: Omit<TelegramConfig, 'pollingTimeout'> & { pollingTimeout?: number },
-    claudeCodeConfig: ClaudeCodeConfig = {},
+    agentSdkConfig: AgentSdkConfig = {},
   ) {
     this.config = { pollingTimeout: 30, ...config }
-    this.claudeCodeConfig = claudeCodeConfig
+    this.agentSdkConfig = agentSdkConfig
   }
 
   async start(engineCtx: EngineContext) {
     this.connectorCenter = engineCtx.connectorCenter
 
     // Inject agent config into Claude Code config (used by /compact command)
-    this.claudeCodeConfig = {
+    this.agentSdkConfig = {
       disallowedTools: engineCtx.config.agent.claudeCode.disallowedTools,
       maxTurns: engineCtx.config.agent.claudeCode.maxTurns,
-      ...this.claudeCodeConfig,
+      ...this.agentSdkConfig,
     }
 
     const bot = new Bot(this.config.token)
@@ -275,7 +275,7 @@ export class TelegramPlugin implements Plugin {
     const result = await forceCompact(
       session,
       async (summarizePrompt) => {
-        const r = await askClaudeCode(summarizePrompt, { ...this.claudeCodeConfig, maxTurns: 1 })
+        const r = await askAgentSdk(summarizePrompt, { ...this.agentSdkConfig, maxTurns: 1 })
         return r.text
       },
     )

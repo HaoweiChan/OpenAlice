@@ -14,7 +14,6 @@ import './contract-ext.js'
 
 export interface AccountSummary {
   id: string
-  provider: string
   label: string
   platformId?: string
   capabilities: AccountCapabilities
@@ -70,7 +69,6 @@ export class AccountManager {
   listAccounts(): AccountSummary[] {
     return Array.from(this.entries.values()).map((uta) => ({
       id: uta.id,
-      provider: uta.provider,
       label: uta.label,
       platformId: uta.platformId,
       capabilities: uta.getCapabilities(),
@@ -90,18 +88,15 @@ export class AccountManager {
   /**
    * Resolve a source string to matching UTAs.
    * - If omitted, returns all.
-   * - Tries id match first, then provider match.
+   * - Matches by account id.
    */
   resolve(source?: string): UnifiedTradingAccount[] {
     if (!source) {
       return Array.from(this.entries.values())
     }
-    // Try id match first
     const byId = this.entries.get(source)
     if (byId) return [byId]
-
-    // Then provider match
-    return Array.from(this.entries.values()).filter((uta) => uta.provider === source)
+    return []
   }
 
   /**
