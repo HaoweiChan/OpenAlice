@@ -6,10 +6,10 @@ const mockHealth = vi.fn()
 const mockWaitForHealth = vi.fn()
 
 vi.mock('./sinopac-bridge-client.js', () => ({
-  SinopacBridgeClient: vi.fn(() => ({
+  SinopacBridgeClient: vi.fn(function () { return {
     health: mockHealth,
     waitForHealth: mockWaitForHealth,
-  })),
+  } as any }),
 }))
 
 describe('SinopacPlatform', () => {

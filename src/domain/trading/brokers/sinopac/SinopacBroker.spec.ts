@@ -18,7 +18,7 @@ const mockClient = {
 }
 
 vi.mock('./sinopac-bridge-client.js', () => ({
-  SinopacBridgeClient: vi.fn(() => mockClient),
+  SinopacBridgeClient: vi.fn(function () { return mockClient as any }),
 }))
 
 describe('SinopacBroker', () => {

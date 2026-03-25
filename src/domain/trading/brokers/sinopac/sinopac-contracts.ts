@@ -4,8 +4,8 @@ import type { BridgeContract } from './sinopac-types.js'
 
 /** Infer secType from Shioaji security_type string. */
 function inferSecType(bc: BridgeContract): string {
-  if (bc.security_type === 'futures' || bc.delivery_month) return 'FUT'
   if (bc.security_type === 'options' || bc.strike_price != null) return 'OPT'
+  if (bc.security_type === 'futures' || bc.delivery_month) return 'FUT'
   return 'STK'
 }
 
