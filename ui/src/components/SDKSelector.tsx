@@ -176,8 +176,7 @@ export const SECURITIES_SDK_OPTIONS: SDKOption[] = [
     name: 'Charles Schwab',
     description: 'Full-service US broker with comprehensive research and zero-commission trades.',
     badge: 'CS',
-    badgeColor: 'text-text-muted',
-    comingSoon: true,
+    badgeColor: 'text-blue-400',
   },
   {
     id: 'tradier',
@@ -186,6 +185,13 @@ export const SECURITIES_SDK_OPTIONS: SDKOption[] = [
     badge: 'TR',
     badgeColor: 'text-text-muted',
     comingSoon: true,
+  },
+  {
+    id: 'sinopac',
+    name: 'Sinopac (Shioaji)',
+    description: 'Taiwan stocks, futures, and options via Shioaji API. Requires Python bridge sidecar.',
+    badge: 'SP',
+    badgeColor: 'text-cyan',
   },
 ]
 
@@ -203,6 +209,20 @@ export const PLATFORM_TYPE_OPTIONS: SDKOption[] = [
     description: 'Commission-free US equities and ETFs with fractional share support.',
     badge: 'AL',
     badgeColor: 'text-green',
+  },
+  {
+    id: 'schwab',
+    name: 'Charles Schwab',
+    description: 'US equities and options via Schwab API with OAuth authentication.',
+    badge: 'CS',
+    badgeColor: 'text-blue-400',
+  },
+  {
+    id: 'sinopac',
+    name: 'Sinopac (Shioaji)',
+    description: 'Taiwan stocks, futures, and options. Requires Python bridge sidecar.',
+    badge: 'SP',
+    badgeColor: 'text-cyan',
   },
 ]
 

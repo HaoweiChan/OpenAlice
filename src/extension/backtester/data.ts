@@ -10,7 +10,7 @@ import { resolve } from 'node:path'
 import type { EquityClientLike, CryptoClientLike, CurrencyClientLike } from '../../domain/market-data/client/types.js'
 import type { Candle } from './types.js'
 
-export type DataSource = 'openbb' | 'ccxt'
+export type DataSource = 'openbb' | 'ccxt' | 'sinopac'
 
 export interface CcxtAccountLike {
   fetchOHLCV(
@@ -21,14 +21,26 @@ export interface CcxtAccountLike {
   ): Promise<Array<[number, number, number, number, number, number]>>
 }
 
+export interface SinopacClientLike {
+  kbars(code: string, securityType: string, start: string, end: string): Promise<{
+    ts: number[]
+    open: number[]
+    high: number[]
+    low: number[]
+    close: number[]
+    volume: number[]
+  }>
+}
+
 export interface DataClients {
   equity: EquityClientLike
   crypto: CryptoClientLike
   currency: CurrencyClientLike
   ccxtAccount?: CcxtAccountLike
+  sinopacClient?: SinopacClientLike
 }
 
-export type AssetClass = 'equity' | 'crypto' | 'currency'
+export type AssetClass = 'equity' | 'crypto' | 'currency' | 'tw_futures'
 
 const CRYPTO_BASES = new Set([
   'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT', 'MATIC',
@@ -41,8 +53,21 @@ const FIAT_CODES = new Set([
   'SEK', 'NOK', 'DKK', 'TWD', 'KRW', 'INR', 'MXN', 'BRL', 'ZAR',
 ])
 
+const TW_FUTURES_CODES = new Set([
+  'TX', 'TXF', 'MTX', 'MXF', 'EXF', 'FXF', 'ZEF', 'ZFF',
+  'T5F', 'TJF', 'SPF', 'UDF', 'UNF', 'GTF', 'XIF', 'G2F',
+])
+
+function isTaiwanFutures(symbol: string): boolean {
+  const upper = symbol.toUpperCase()
+  const base = upper.replace(/[A-Z]\d$/, '') // strip month code like "D6"
+  return TW_FUTURES_CODES.has(upper) || TW_FUTURES_CODES.has(base)
+}
+
 export function detectAssetClass(symbol: string): AssetClass {
   const upper = symbol.toUpperCase()
+
+  if (isTaiwanFutures(upper)) return 'tw_futures'
 
   // Handle slash format: BTC/USD, EUR/USD
   if (upper.includes('/')) {
@@ -167,6 +192,31 @@ async function fetchViaCcxt(
   return { success: true, candles: allCandles, source: 'ccxt' }
 }
 
+async function fetchViaSinopac(
+  symbol: string,
+  securityType: string,
+  startDate: string,
+  endDate: string,
+  client: SinopacClientLike,
+): Promise<FetchOhlcvResult> {
+  const resp = await client.kbars(symbol, securityType, startDate, endDate)
+  if (!resp.ts || resp.ts.length === 0) {
+    return { success: false, error: `No Sinopac kbar data returned for ${symbol}` }
+  }
+
+  const candles: Candle[] = resp.ts.map((ts, i) => ({
+    timestamp: ts > 1e15 ? Math.floor(ts / 1e9) : ts > 1e12 ? Math.floor(ts / 1000) : ts,
+    open: resp.open[i],
+    high: resp.high[i],
+    low: resp.low[i],
+    close: resp.close[i],
+    volume: resp.volume[i],
+  }))
+
+  candles.sort((a, b) => a.timestamp - b.timestamp)
+  return { success: true, candles, source: 'sinopac' }
+}
+
 export async function fetchOhlcv(
   symbol: string,
   interval: string,
@@ -177,7 +227,7 @@ export async function fetchOhlcv(
   dataSource?: DataSource,
 ): Promise<FetchOhlcvResult> {
   const asset = assetClass ?? detectAssetClass(symbol)
-  const source = dataSource ?? 'openbb'
+  const source = dataSource ?? (asset === 'tw_futures' ? 'sinopac' : 'openbb')
 
   // Check cache first
   const key = cacheKey(symbol, interval, startDate, endDate, source)
@@ -200,6 +250,22 @@ export async function fetchOhlcv(
       } catch (err) {
         console.warn(`backtester: CCXT fetch failed, falling back to OpenBB: ${err}`)
       }
+    }
+  }
+
+  // Sinopac path
+  if (source === 'sinopac' || asset === 'tw_futures') {
+    if (!clients.sinopacClient) {
+      return { success: false, error: 'Sinopac bridge unavailable — no client configured' }
+    }
+    try {
+      const result = await fetchViaSinopac(symbol, 'futures', startDate, endDate, clients.sinopacClient)
+      if (result.success && result.candles) {
+        await writeCache(key, result.candles)
+      }
+      return result
+    } catch (err) {
+      return { success: false, error: `Sinopac fetch failed: ${err instanceof Error ? err.message : String(err)}` }
     }
   }
 

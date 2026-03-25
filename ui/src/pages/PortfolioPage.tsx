@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { api, type Position, type WalletCommitLog } from '../api'
 import { PageHeader } from '../components/PageHeader'
 import { EmptyState } from '../components/StateViews'
@@ -10,7 +10,7 @@ interface AggregatedEquity {
   totalCash: number
   totalUnrealizedPnL: number
   totalRealizedPnL: number
-  accounts: Array<{ id: string; label: string; equity: number; cash: number }>
+  accounts: Array<{ id: string; label: string; equity: number; cash: number; unrealizedPnL?: number }>
 }
 
 interface AccountData {
@@ -27,7 +27,19 @@ interface PortfolioData {
   accounts: AccountData[]
 }
 
+type DisplayCurrency = 'USD' | 'TWD'
+
 const EMPTY: PortfolioData = { equity: null, accounts: [] }
+
+const PROVIDER_CURRENCY: Record<string, string> = {
+  sinopac: 'TWD',
+  schwab: 'USD',
+  alpaca: 'USD',
+  ccxt: 'USD',
+}
+
+// Approximate TWD/USD rate; will be replaced by live rate if available
+const DEFAULT_TWD_USD = 32.5
 
 // ==================== Page ====================
 
@@ -35,6 +47,9 @@ export function PortfolioPage() {
   const [data, setData] = useState<PortfolioData>(EMPTY)
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
+  const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>('USD')
+  const [hiddenAccounts, setHiddenAccounts] = useState<Set<string>>(new Set())
+  const [twdUsdRate, setTwdUsdRate] = useState(DEFAULT_TWD_USD)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -46,25 +61,81 @@ export function PortfolioPage() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  // Auto-refresh every 30s
   useEffect(() => {
     const interval = setInterval(refresh, 30_000)
     return () => clearInterval(interval)
   }, [refresh])
 
-  const allPositions = data.accounts.flatMap(a =>
-    a.positions.map(p => ({ ...p, accountLabel: a.label, accountProvider: a.provider })),
-  )
-  const allWalletLogs = data.accounts.flatMap(a =>
-    a.walletLog.map(c => ({ ...c, accountLabel: a.label, accountProvider: a.provider })),
-  )
+  // Try to fetch a live TWD/USD rate on mount
+  useEffect(() => {
+    fetch('/api/trading/accounts/sinopac-main/quote?symbol=USDTWD')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.last > 0) setTwdUsdRate(d.last) })
+      .catch(() => {})
+  }, [])
 
-  // Merge equity per-account data with provider info + per-account unrealizedPnL from positions
-  const accountSources = (data.equity?.accounts ?? []).map(eq => {
-    const acct = data.accounts.find(a => a.id === eq.id)
-    const unrealizedPnL = acct?.positions.reduce((sum, p) => sum + p.unrealizedPnL, 0) ?? 0
-    return { ...eq, provider: acct?.provider ?? '', unrealizedPnL, error: acct?.error }
+  const toggleAccount = useCallback((id: string) => {
+    setHiddenAccounts(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const convert = useCallback((amount: number, fromCurrency: string): number => {
+    if (fromCurrency === displayCurrency) return amount
+    if (fromCurrency === 'TWD' && displayCurrency === 'USD') return amount / twdUsdRate
+    if (fromCurrency === 'USD' && displayCurrency === 'TWD') return amount * twdUsdRate
+    return amount
+  }, [displayCurrency, twdUsdRate])
+
+  const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
+
+  const equityMap = new Map((data.equity?.accounts ?? []).map(eq => [eq.id, eq]))
+  const accountSources = data.accounts.map(acct => {
+    const eq = equityMap.get(acct.id)
+    const unrealizedPnL = acct.positions.reduce((sum, p) => sum + p.unrealizedPnL, 0)
+    const nativeCurrency = PROVIDER_CURRENCY[acct.provider] ?? 'USD'
+    return {
+      id: acct.id,
+      label: acct.label,
+      provider: acct.provider,
+      nativeCurrency,
+      equity: eq?.equity ?? 0,
+      cash: eq?.cash ?? 0,
+      unrealizedPnL,
+      error: acct.error ?? (!eq ? 'Not connected' : undefined),
+    }
   })
+
+  // Filtered data based on hidden accounts
+  const visibleAccounts = accountSources.filter(a => !hiddenAccounts.has(a.id))
+  const visibleAccountIds = new Set(visibleAccounts.map(a => a.id))
+
+  const allPositions = data.accounts
+    .filter(a => visibleAccountIds.has(a.id))
+    .flatMap(a => a.positions.map(p => ({
+      ...p,
+      accountLabel: a.label,
+      accountProvider: a.provider,
+      nativeCurrency: PROVIDER_CURRENCY[a.provider] ?? 'USD',
+    })))
+
+  const allWalletLogs = data.accounts
+    .filter(a => visibleAccountIds.has(a.id))
+    .flatMap(a => a.walletLog.map(c => ({ ...c, accountLabel: a.label, accountProvider: a.provider })))
+
+  // Aggregate visible accounts in display currency
+  const aggregated = useMemo(() => {
+    let totalEquity = 0, totalCash = 0, totalUnrealizedPnL = 0, totalRealizedPnL = 0
+    for (const acct of visibleAccounts) {
+      totalEquity += convert(acct.equity, acct.nativeCurrency)
+      totalCash += convert(acct.cash, acct.nativeCurrency)
+      totalUnrealizedPnL += convert(acct.unrealizedPnL, acct.nativeCurrency)
+    }
+    return { totalEquity, totalCash, totalUnrealizedPnL, totalRealizedPnL }
+  }, [visibleAccounts, convert])
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -72,30 +143,45 @@ export function PortfolioPage() {
         title="Portfolio"
         description={<>Live portfolio overview across all trading accounts.{lastRefresh && <span className="ml-2 text-text-muted/50">Updated {lastRefresh.toLocaleTimeString()}</span>}</>}
         right={
-          <button
-            onClick={refresh}
-            disabled={loading}
-            className="px-3 py-1.5 text-[13px] font-medium rounded-md border border-border hover:bg-bg-tertiary disabled:opacity-50 transition-colors"
-          >
-            {loading ? 'Loading...' : 'Refresh'}
-          </button>
+          <div className="flex items-center gap-2">
+            <CurrencyToggle value={displayCurrency} onChange={setDisplayCurrency} />
+            <button
+              onClick={refresh}
+              disabled={loading}
+              className="px-3 py-1.5 text-[13px] font-medium rounded-md border border-border hover:bg-bg-tertiary disabled:opacity-50 transition-colors"
+            >
+              {loading ? 'Loading...' : 'Refresh'}
+            </button>
+          </div>
         }
       />
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5">
         <div className="max-w-[900px] space-y-5">
-          <HeroMetrics equity={data.equity} />
+          <HeroMetrics
+            equity={data.equity ? aggregated : null}
+            currencySymbol={currencySymbol}
+          />
 
           {accountSources.length > 0 && (
-            <AccountStrip sources={accountSources} />
+            <AccountStrip
+              sources={accountSources}
+              hiddenAccounts={hiddenAccounts}
+              onToggle={toggleAccount}
+              convert={convert}
+              currencySymbol={currencySymbol}
+            />
           )}
 
           {allPositions.length > 0 && (
-            <PositionsTable positions={allPositions} />
+            <PositionsTable
+              positions={allPositions}
+              convert={convert}
+              displayCurrency={displayCurrency}
+              currencySymbol={currencySymbol}
+            />
           )}
 
-          {/* Empty states */}
           {data.accounts.length === 0 && !loading && (
             <EmptyState title="No trading accounts connected." description="Configure connections in the Trading page." />
           )}
@@ -144,9 +230,41 @@ async function fetchPortfolioData(): Promise<PortfolioData> {
   }
 }
 
+// ==================== Currency Toggle ====================
+
+function CurrencyToggle({ value, onChange }: { value: DisplayCurrency; onChange: (v: DisplayCurrency) => void }) {
+  return (
+    <div className="flex rounded-md border border-border overflow-hidden text-[12px]">
+      <button
+        onClick={() => onChange('USD')}
+        className={`px-2.5 py-1 font-medium transition-colors ${
+          value === 'USD' ? 'bg-accent text-bg' : 'bg-bg-secondary text-text-muted hover:text-text'
+        }`}
+      >
+        USD
+      </button>
+      <button
+        onClick={() => onChange('TWD')}
+        className={`px-2.5 py-1 font-medium transition-colors ${
+          value === 'TWD' ? 'bg-accent text-bg' : 'bg-bg-secondary text-text-muted hover:text-text'
+        }`}
+      >
+        TWD
+      </button>
+    </div>
+  )
+}
+
 // ==================== Hero Metrics ====================
 
-function HeroMetrics({ equity }: { equity: AggregatedEquity | null }) {
+interface HeroData {
+  totalEquity: number
+  totalCash: number
+  totalUnrealizedPnL: number
+  totalRealizedPnL: number
+}
+
+function HeroMetrics({ equity, currencySymbol }: { equity: HeroData | null; currencySymbol: string }) {
   if (!equity) {
     return (
       <div className="border border-border rounded-lg bg-bg-secondary p-5 text-center">
@@ -158,10 +276,10 @@ function HeroMetrics({ equity }: { equity: AggregatedEquity | null }) {
   return (
     <div className="border border-border rounded-lg bg-bg-secondary p-5">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <HeroItem label="Total Equity" value={fmt(equity.totalEquity)} />
-        <HeroItem label="Cash" value={fmt(equity.totalCash)} />
-        <HeroItem label="Unrealized PnL" value={fmtPnl(equity.totalUnrealizedPnL)} pnl={equity.totalUnrealizedPnL} />
-        <HeroItem label="Realized PnL" value={fmtPnl(equity.totalRealizedPnL)} pnl={equity.totalRealizedPnL} />
+        <HeroItem label="Total Equity" value={fmtC(equity.totalEquity, currencySymbol)} />
+        <HeroItem label="Cash" value={fmtC(equity.totalCash, currencySymbol)} />
+        <HeroItem label="Unrealized PnL" value={fmtPnlC(equity.totalUnrealizedPnL, currencySymbol)} pnl={equity.totalUnrealizedPnL} />
+        <HeroItem label="Realized PnL" value={fmtPnlC(equity.totalRealizedPnL, currencySymbol)} pnl={equity.totalRealizedPnL} />
       </div>
     </div>
   )
@@ -182,25 +300,54 @@ function HeroItem({ label, value, pnl }: { label: string; value: string; pnl?: n
 const PROVIDER_COLORS: Record<string, string> = {
   ccxt: 'bg-accent',
   alpaca: 'bg-green',
+  schwab: 'bg-blue-400',
+  sinopac: 'bg-cyan-400',
 }
 
-function AccountStrip({ sources }: { sources: Array<{ id: string; label: string; provider: string; equity: number; unrealizedPnL: number; error?: string }> }) {
+interface AccountSource {
+  id: string
+  label: string
+  provider: string
+  nativeCurrency: string
+  equity: number
+  unrealizedPnL: number
+  error?: string
+}
+
+function AccountStrip({ sources, hiddenAccounts, onToggle, convert, currencySymbol }: {
+  sources: AccountSource[]
+  hiddenAccounts: Set<string>
+  onToggle: (id: string) => void
+  convert: (amount: number, from: string) => number
+  currencySymbol: string
+}) {
   return (
     <div className="flex flex-wrap gap-2">
       {sources.map(s => {
         const dotColor = PROVIDER_COLORS[s.provider] || 'bg-text-muted'
+        const hidden = hiddenAccounts.has(s.id)
+        const equity = convert(s.equity, s.nativeCurrency)
+        const pnl = convert(s.unrealizedPnL, s.nativeCurrency)
         return (
-          <div key={s.id} className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-bg-secondary text-[12px]">
+          <button
+            key={s.id}
+            onClick={() => onToggle(s.id)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-[12px] transition-all cursor-pointer ${
+              hidden
+                ? 'border-border/50 bg-bg-secondary/50 opacity-40 hover:opacity-60'
+                : 'border-border bg-bg-secondary hover:border-accent/50'
+            }`}
+          >
             <div className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
             <span className="text-text font-medium">{s.label}</span>
-            <span className="text-text-muted">{fmt(s.equity)}</span>
-            {s.unrealizedPnL !== 0 && (
-              <span className={s.unrealizedPnL >= 0 ? 'text-green' : 'text-red'}>
-                {fmtPnl(s.unrealizedPnL)}
+            <span className="text-text-muted">{fmtC(equity, currencySymbol)}</span>
+            {pnl !== 0 && (
+              <span className={pnl >= 0 ? 'text-green' : 'text-red'}>
+                {fmtPnlC(pnl, currencySymbol)}
               </span>
             )}
             {s.error && <span className="text-text-muted/50">{s.error}</span>}
-          </div>
+          </button>
         )
       })}
     </div>
@@ -212,9 +359,9 @@ function AccountStrip({ sources }: { sources: Array<{ id: string; label: string;
 interface PositionWithAccount extends Position {
   accountLabel: string
   accountProvider: string
+  nativeCurrency: string
 }
 
-/** True when the position carries derivative-specific context worth showing (side/leverage). */
 function isDerivative(p: Position): boolean {
   const t = p.contract.secType
   if (t === 'FUT' || t === 'OPT' || t === 'FOP') return true
@@ -222,16 +369,14 @@ function isDerivative(p: Position): boolean {
   return p.side === 'short'
 }
 
-/** Build display fragments for a contract based on its secType. */
 function contractDisplay(p: Position): { name: string; tag?: string } {
   const c = p.contract
   const sym = c.symbol ?? '???'
   const t = c.secType
 
   if (t === 'OPT' || t === 'FOP') {
-    // Options: show localSymbol if available, else construct from parts
     const optDesc = c.localSymbol
-      ?? [sym, c.lastTradeDateOrContractMonth, c.right, c.strike && fmt(c.strike)].filter(Boolean).join(' ')
+      ?? [sym, c.lastTradeDateOrContractMonth, c.right, c.strike && fmtC(c.strike, '$')].filter(Boolean).join(' ')
     return { name: optDesc, tag: 'opt' }
   }
   if (t === 'FUT') {
@@ -241,11 +386,15 @@ function contractDisplay(p: Position): { name: string; tag?: string } {
   if (t === 'CRYPTO') {
     return { name: sym, tag: (p.leverage ?? 1) > 1 ? 'swap' : 'spot' }
   }
-  // STK, CASH, BOND, CMDTY, etc. — just the symbol, no tag
   return { name: sym }
 }
 
-function PositionsTable({ positions }: { positions: PositionWithAccount[] }) {
+function PositionsTable({ positions, convert, displayCurrency, currencySymbol }: {
+  positions: PositionWithAccount[]
+  convert: (amount: number, from: string) => number
+  displayCurrency: DisplayCurrency
+  currencySymbol: string
+}) {
   return (
     <div>
       <h3 className="text-[13px] font-semibold text-text-muted uppercase tracking-wide mb-3">
@@ -269,11 +418,12 @@ function PositionsTable({ positions }: { positions: PositionWithAccount[] }) {
               const display = contractDisplay(p)
               const deriv = isDerivative(p)
               const hasMarginInfo = p.margin || p.liquidationPrice
+              const isForeign = p.nativeCurrency !== displayCurrency
+              const nativeSym = p.nativeCurrency === 'TWD' ? 'NT$' : '$'
 
               return (
                 <tr key={i} className="border-t border-border hover:bg-bg-tertiary/30 transition-colors">
                   <td className="px-3 py-2">
-                    {/* Primary: symbol + inline badges */}
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="font-medium text-text">{display.name}</span>
                       {display.tag && (
@@ -287,23 +437,27 @@ function PositionsTable({ positions }: { positions: PositionWithAccount[] }) {
                       {(p.leverage ?? 1) > 1 && (
                         <span className="text-[10px] px-1 py-0.5 rounded bg-accent/15 text-accent font-medium">{p.leverage}x</span>
                       )}
+                      {isForeign && (
+                        <span className="text-[10px] px-1 py-0.5 rounded bg-bg-tertiary text-text-muted/70">{p.nativeCurrency}</span>
+                      )}
                       <span className="text-[10px] text-text-muted/50">{p.accountLabel}</span>
                     </div>
-                    {/* Secondary: margin / liquidation for derivatives */}
                     {hasMarginInfo && (
                       <div className="text-[11px] text-text-muted mt-0.5">
-                        {p.margin ? `Margin ${fmt(p.margin)}` : ''}
+                        {p.margin ? `Margin ${fmtC(p.margin, nativeSym)}` : ''}
                         {p.margin && p.liquidationPrice ? ' \u00b7 ' : ''}
-                        {p.liquidationPrice ? `Liq ${fmt(p.liquidationPrice)}` : ''}
+                        {p.liquidationPrice ? `Liq ${fmtC(p.liquidationPrice, nativeSym)}` : ''}
                       </div>
                     )}
                   </td>
                   <td className="px-3 py-2 text-right text-text">{fmtNum(Number(p.quantity))}</td>
-                  <td className="px-3 py-2 text-right text-text-muted">{fmt(p.avgCost)}</td>
-                  <td className="px-3 py-2 text-right text-text">{fmt(p.marketPrice)}</td>
-                  <td className="px-3 py-2 text-right text-text">{fmt(p.marketValue)}</td>
+                  <td className="px-3 py-2 text-right text-text-muted">{fmtC(p.avgCost, nativeSym)}</td>
+                  <td className="px-3 py-2 text-right text-text">{fmtC(p.marketPrice, nativeSym)}</td>
+                  <td className="px-3 py-2 text-right text-text">
+                    {fmtC(convert(p.marketValue, p.nativeCurrency), currencySymbol)}
+                  </td>
                   <td className={`px-3 py-2 text-right font-medium ${p.unrealizedPnL >= 0 ? 'text-green' : 'text-red'}`}>
-                    {fmtPnl(p.unrealizedPnL)}
+                    {fmtPnlC(convert(p.unrealizedPnL, p.nativeCurrency), currencySymbol)}
                   </td>
                   <td className={`px-3 py-2 text-right ${p.unrealizedPnL >= 0 ? 'text-green' : 'text-red'}`}>
                     {(() => {
@@ -386,14 +540,14 @@ function TradeLog({ commits }: { commits: CommitWithAccount[] }) {
 
 // ==================== Formatting Helpers ====================
 
-function fmt(n: number): string {
-  return n >= 1000 ? `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-    : `$${n.toFixed(2)}`
+function fmtC(n: number, symbol: string): string {
+  const rounded = Math.round(n)
+  return `${symbol}${rounded.toLocaleString('en-US')}`
 }
 
-function fmtPnl(n: number): string {
+function fmtPnlC(n: number, symbol: string): string {
   const sign = n >= 0 ? '+' : ''
-  return `${sign}${fmt(n)}`
+  return `${sign}${fmtC(n, symbol)}`
 }
 
 function fmtNum(n: number): string {

@@ -39,6 +39,9 @@ importers:
       '@sinclair/typebox':
         specifier: 0.34.48
         version: 0.34.48
+      '@sudowealth/schwab-api':
+        specifier: ^2.1.1
+        version: 2.1.1
       '@traderalice/ibkr':
         specifier: workspace:*
         version: link:packages/ibkr
@@ -1149,6 +1152,10 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@sudowealth/schwab-api@2.1.1':
+    resolution: {integrity: sha512-tbNhlD6g0w0Z06Rz3HyBRh8/9Fsor30Lbgqx+zoMddCPaUeCwqbj85O65lGu9ZMyGQb5uhaKRsoTlcL/e9FtVQ==}
+    engines: {node: '>=20.0.0'}
 
   '@tailwindcss/node@4.2.1':
     resolution: {integrity: sha512-jlx6sLk4EOwO6hHe1oCGm1Q4AN/s0rSrTTPBGPM0/RQ6Uylwq17FuU8IeJJKEjtc6K6O07zsvP+gDO6MMWo7pg==}
@@ -3641,6 +3648,11 @@ snapshots:
   '@sinclair/typebox@0.34.48': {}
 
   '@standard-schema/spec@1.1.0': {}
+
+  '@sudowealth/schwab-api@2.1.1':
+    dependencies:
+      pkce-challenge: 5.0.1
+      zod: 3.25.76
 
   '@tailwindcss/node@4.2.1':
     dependencies:

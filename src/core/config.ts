@@ -171,6 +171,14 @@ export const toolsSchema = z.object({
   disabled: z.array(z.string()).default([]),
 })
 
+export const automationSchema = z.object({
+  defaultTimeframe: z.enum(['1m', '5m', '15m', '30m', '1h']).default('5m'),
+  maxConcurrentStrategies: z.number().int().min(1).default(10),
+  walkForwardThreshold: z.number().min(0).max(1).default(0.5),
+  reEvaluationSchedule: z.string().default('0 6 * * *'),
+  autoPauseOnDivergence: z.boolean().default(false),
+})
+
 /** Vercel AI SDK model override — per-channel provider/model/key/endpoint. */
 export const vercelAiSdkOverrideSchema = z.object({
   provider: z.string(),
@@ -231,9 +239,26 @@ const alpacaPlatformSchema = z.object({
   paper: z.boolean().default(true),
 })
 
+const sinopacPlatformSchema = z.object({
+  id: z.string(),
+  label: z.string().optional(),
+  type: z.literal('sinopac'),
+  bridgeUrl: z.string().default('http://localhost:8890'),
+  bridgeAutoStart: z.boolean().default(false),
+  accountType: z.enum(['stock', 'futures', 'both']).default('both'),
+})
+
+const schwabPlatformSchema = z.object({
+  id: z.string(),
+  label: z.string().optional(),
+  type: z.literal('schwab'),
+}).passthrough()
+
 export const platformConfigSchema = z.discriminatedUnion('type', [
   ccxtPlatformSchema,
   alpacaPlatformSchema,
+  sinopacPlatformSchema,
+  schwabPlatformSchema,
 ])
 
 export const platformsFileSchema = z.array(platformConfigSchema)
@@ -267,6 +292,7 @@ export type Config = {
   connectors: z.infer<typeof connectorsSchema>
   news: z.infer<typeof newsCollectorSchema>
   tools: z.infer<typeof toolsSchema>
+  automation: z.infer<typeof automationSchema>
 }
 
 // ==================== Loader ====================
@@ -299,7 +325,7 @@ async function parseAndSeed<T>(filename: string, schema: z.ZodType<T>, raw: unkn
 }
 
 export async function loadConfig(): Promise<Config> {
-  const files = ['engine.json', 'agent.json', 'crypto.json', 'securities.json', 'market-data.json', 'compaction.json', 'ai-provider-manager.json', 'heartbeat.json', 'connectors.json', 'news.json', 'tools.json'] as const
+  const files = ['engine.json', 'agent.json', 'crypto.json', 'securities.json', 'market-data.json', 'compaction.json', 'ai-provider-manager.json', 'heartbeat.json', 'connectors.json', 'news.json', 'tools.json', 'automation.json'] as const
   const raws = await Promise.all(files.map((f) => loadJsonFile(f)))
 
   // TODO: remove all migration blocks before v1.0 — no stable release yet, breaking changes are fine
@@ -364,6 +390,7 @@ export async function loadConfig(): Promise<Config> {
     connectors:    await parseAndSeed(files[8], connectorsSchema, raws[8]),
     news:          await parseAndSeed(files[9], newsCollectorSchema, raws[9]),
     tools:         await parseAndSeed(files[10], toolsSchema, raws[10]),
+    automation:    await parseAndSeed(files[11], automationSchema, raws[11]),
   }
 }
 
@@ -558,6 +585,7 @@ const sectionSchemas: Record<ConfigSection, z.ZodTypeAny> = {
   connectors: connectorsSchema,
   news: newsCollectorSchema,
   tools: toolsSchema,
+  automation: automationSchema,
 }
 
 const sectionFiles: Record<ConfigSection, string> = {
@@ -572,6 +600,7 @@ const sectionFiles: Record<ConfigSection, string> = {
   connectors: 'connectors.json',
   news: 'news.json',
   tools: 'tools.json',
+  automation: 'automation.json',
 }
 
 /** All valid config section names (derived from sectionSchemas). */

@@ -48,7 +48,14 @@ import { createHeartbeat } from './task/heartbeat/index.js'
 import { NewsCollectorStore, NewsCollector } from './domain/news/index.js'
 import { createNewsArchiveTools } from './tool/news.js'
 import { createBacktestTools } from './extension/backtester/adapter.js'
-import type { CcxtAccountLike } from './extension/backtester/data.js'
+import type { CcxtAccountLike, SinopacClientLike } from './extension/backtester/data.js'
+import { StrategyStore } from './domain/trading/automation/strategy-store.js'
+import { MarketWatcher } from './domain/trading/automation/market-watcher.js'
+import { SignalExecutor } from './domain/trading/automation/signal-executor.js'
+import { PerformanceTracker } from './domain/trading/automation/performance-tracker.js'
+import { StrategyLifecycle } from './domain/trading/automation/strategy-lifecycle.js'
+import { createStrategyTools } from './tool/strategy.js'
+import { SinopacBridgeClient } from './domain/trading/brokers/sinopac/sinopac-bridge-client.js'
 
 // ==================== Persistence paths ====================
 
@@ -117,21 +124,36 @@ async function main() {
   const tradingConfig = await loadTradingConfig()
   const platformRegistry = new Map<string, IPlatform>()
   for (const pc of tradingConfig.platforms) {
-    platformRegistry.set(pc.id, createPlatformFromConfig(pc))
+    const platform = createPlatformFromConfig(pc)
+    if (platform) {
+      platformRegistry.set(pc.id, platform)
+    } else {
+      console.warn(`trading: skipping unsupported platform type "${pc.type}" (${pc.id})`)
+    }
   }
-  validatePlatformRefs([...platformRegistry.values()], tradingConfig.accounts)
+  const knownPlatformIds = new Set([...platformRegistry.keys()])
+  const validAccounts = tradingConfig.accounts.filter((a) => {
+    if (!knownPlatformIds.has(a.platformId)) {
+      console.warn(`trading: skipping account "${a.id}" — platform "${a.platformId}" not available`)
+      return false
+    }
+    return true
+  })
+  validatePlatformRefs([...platformRegistry.values()], validAccounts)
 
-  /** Initialize and register a single account. Returns true if successful. */
+  /** Initialize and register a single account. Always registers the account
+   *  so it appears in the portfolio; marks init failures as non-fatal. */
   async function initAccount(
     accountCfg: { id: string; platformId: string; guards: Array<{ type: string; options: Record<string, unknown> }> },
     platform: IPlatform,
   ): Promise<boolean> {
     const broker = createBrokerFromConfig(platform, accountCfg)
+    let initOk = true
     try {
       await broker.init()
     } catch (err) {
       console.warn(`trading: ${accountCfg.id} init failed (non-fatal):`, err)
-      return false
+      initOk = false
     }
     const savedState = await loadGitState(accountCfg.id)
     const filePath = gitFilePath(accountCfg.id)
@@ -142,15 +164,19 @@ async function main() {
       platformId: accountCfg.platformId,
     })
     accountManager.add(uta)
-    console.log(`trading: ${uta.label} initialized`)
-    return true
+    if (initOk) {
+      console.log(`trading: ${uta.label} initialized`)
+    } else {
+      console.log(`trading: ${uta.label} registered (not connected)`)
+    }
+    return initOk
   }
 
   // Alpaca accounts — sync init (fast, blocks startup)
   // CCXT accounts — async background init (loadMarkets is slow)
   const ccxtAccountConfigs: Array<{ cfg: typeof tradingConfig.accounts[number]; platform: IPlatform }> = []
 
-  for (const accCfg of tradingConfig.accounts) {
+  for (const accCfg of validAccounts) {
     const platform = platformRegistry.get(accCfg.platformId)!
     if (platform.providerType === 'alpaca') {
       await initAccount(accCfg, platform)
@@ -279,9 +305,45 @@ async function main() {
       if (!uta) return undefined
       const broker = uta.broker
       return 'fetchOHLCV' in broker ? broker as unknown as CcxtAccountLike : undefined
+    }, () => {
+      const sinopacCfg = tradingConfig.platforms.find((p) => p.type === 'sinopac')
+      if (!sinopacCfg) return undefined
+      const bridgeUrl = (sinopacCfg as { bridgeUrl?: string }).bridgeUrl ?? 'http://localhost:8890'
+      return {
+        async kbars(code, secType, start, end) {
+          const url = `${bridgeUrl}/kbars?code=${code}&security_type=${secType}&start=${start}&end=${end}`
+          const resp = await fetch(url)
+          if (!resp.ok) throw new Error(`Sinopac kbars fetch failed: ${resp.status}`)
+          return resp.json()
+        },
+      } satisfies SinopacClientLike
     }),
     'backtester',
   )
+
+  // ==================== Trading Automation ====================
+
+  const strategyStore = new StrategyStore()
+  await strategyStore.init()
+
+  const getBridgeClient = (brokerId: string): SinopacBridgeClient | undefined => {
+    const sinopacCfg = tradingConfig.platforms.find((p) => p.type === 'sinopac')
+    if (!sinopacCfg) return undefined
+    const bridgeUrl = (sinopacCfg as { bridgeUrl?: string }).bridgeUrl ?? 'http://localhost:8890'
+    return new SinopacBridgeClient(bridgeUrl)
+  }
+
+  const marketWatcher = new MarketWatcher({
+    strategyStore,
+    eventLog,
+    accountManager,
+    getBridgeClient,
+  })
+
+  const performanceTracker = new PerformanceTracker(eventLog)
+  performanceTracker.setStrategyStore(strategyStore)
+
+  toolCenter.register(createStrategyTools(strategyStore, marketWatcher, performanceTracker), 'strategy')
 
   console.log(`tool-center: ${toolCenter.list().length} tools registered`)
 
@@ -530,6 +592,50 @@ async function main() {
 
   console.log('engine: started')
 
+  // ==================== Trading Automation Startup ====================
+
+  performanceTracker.start()
+
+  const strategyLifecycle = new StrategyLifecycle({
+    eventLog,
+    connectorCenter,
+    strategyStore,
+    performanceTracker,
+    autoPauseOnDivergence: config.automation.autoPauseOnDivergence,
+  })
+  strategyLifecycle.start()
+
+  const enabledStrategies = strategyStore.listEnabled()
+  if (enabledStrategies.length > 0) {
+    const signalExecutor = new SignalExecutor({
+      eventLog,
+      connectorCenter,
+      accountManager,
+      strategyStore,
+      marketWatcher,
+    })
+    signalExecutor.start()
+    await marketWatcher.start()
+    console.log(`automation: ${enabledStrategies.length} strategies active`)
+  } else {
+    console.log('automation: no enabled strategies (use strategyCreate + strategyEnable to start)')
+  }
+
+  // Seed cron job for daily strategy re-evaluation if configured
+  if (config.automation.reEvaluationSchedule) {
+    const reEvalJobName = '__strategy-re-evaluation'
+    const existing = cronEngine.list().find((j) => j.name === reEvalJobName)
+    if (!existing) {
+      await cronEngine.add({
+        name: reEvalJobName,
+        schedule: { kind: 'cron', cron: config.automation.reEvaluationSchedule },
+        payload: 'Review all enabled trading strategies. For each one, run strategyReEvaluate to check performance vs deployment baseline. Report any divergent strategies and suggest improvements.',
+        enabled: enabledStrategies.length > 0,
+      })
+      console.log(`automation: seeded re-evaluation cron (${config.automation.reEvaluationSchedule})`)
+    }
+  }
+
   // ==================== CCXT Background Injection ====================
   // CCXT accounts init in background (loadMarkets is slow). When done, register
   // CCXT-specific tools so the next agent call picks them up automatically.
@@ -552,6 +658,10 @@ async function main() {
   let stopped = false
   const shutdown = async () => {
     stopped = true
+    marketWatcher.stop()
+    strategyLifecycle.stop()
+    performanceTracker.stop()
+    strategyStore.destroy()
     newsCollector?.stop()
     heartbeat.stop()
     cronListener.stop()

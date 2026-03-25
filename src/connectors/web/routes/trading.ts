@@ -31,6 +31,36 @@ export function createTradingRoutes(ctx: EngineContext) {
     return c.json(result, result.success ? 200 : 500)
   })
 
+  // OAuth auth URL (Schwab)
+  app.get('/accounts/:id/auth-url', async (c) => {
+    const account = ctx.accountManager.get(c.req.param('id'))
+    if (!account) return c.json({ error: 'Account not found' }, 404)
+    const broker = account.broker as { getAuthUrl?: () => Promise<string> }
+    if (!broker.getAuthUrl) return c.json({ error: 'OAuth not supported for this account type' }, 400)
+    try {
+      const authUrl = await broker.getAuthUrl()
+      return c.json({ authUrl })
+    } catch (err) {
+      return c.json({ error: String(err) }, 500)
+    }
+  })
+
+  // OAuth callback (Schwab)
+  app.post('/accounts/:id/auth-callback', async (c) => {
+    const account = ctx.accountManager.get(c.req.param('id'))
+    if (!account) return c.json({ error: 'Account not found' }, 404)
+    const broker = account.broker as { completeOAuth?: (url: string) => Promise<void> }
+    if (!broker.completeOAuth) return c.json({ error: 'OAuth not supported for this account type' }, 400)
+    try {
+      const body = await c.req.json<{ callbackUrl: string }>()
+      if (!body.callbackUrl) return c.json({ error: 'callbackUrl required' }, 400)
+      await broker.completeOAuth(body.callbackUrl)
+      return c.json({ success: true })
+    } catch (err) {
+      return c.json({ error: String(err) }, 500)
+    }
+  })
+
   // Account info
   app.get('/accounts/:id/account', async (c) => {
     const account = ctx.accountManager.get(c.req.param('id'))

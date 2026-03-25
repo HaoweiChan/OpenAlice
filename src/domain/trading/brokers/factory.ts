@@ -8,6 +8,8 @@
 import type { IBroker } from './types.js'
 import { CcxtPlatform } from './ccxt/CcxtPlatform.js'
 import { AlpacaPlatform } from './alpaca/AlpacaPlatform.js'
+import { SinopacPlatform } from './sinopac/SinopacPlatform.js'
+import { SchwabPlatform } from './schwab/SchwabPlatform.js'
 import type { PlatformConfig, AccountConfig } from '../../../core/config.js'
 
 // ==================== Platform ====================
@@ -59,6 +61,21 @@ export function createPlatformFromConfig(config: PlatformConfig): IPlatform {
         label: config.label,
         paper: config.paper,
       })
+    case 'sinopac':
+      return new SinopacPlatform({
+        id: config.id,
+        label: config.label,
+        bridgeUrl: config.bridgeUrl,
+        bridgeAutoStart: config.bridgeAutoStart,
+        accountType: config.accountType,
+      })
+    case 'schwab':
+      return new SchwabPlatform({
+        id: config.id,
+        label: config.label,
+      })
+    default:
+      return undefined as unknown as IPlatform
   }
 }
 

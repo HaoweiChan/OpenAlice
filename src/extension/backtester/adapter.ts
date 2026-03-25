@@ -8,7 +8,7 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import type { EquityClientLike, CryptoClientLike, CurrencyClientLike } from '../../domain/market-data/client/types.js'
-import { fetchOhlcv, type DataClients, type DataSource, type CcxtAccountLike } from './data.js'
+import { fetchOhlcv, type DataClients, type DataSource, type CcxtAccountLike, type SinopacClientLike } from './data.js'
 import { runBacktest } from './engine.js'
 import { writeBacktestResults, listBacktests as listBacktestFiles, readBacktestSummary as readSummary } from './io.js'
 import { runParameterSweep, writeSweepResults } from './sweep.js'
@@ -25,7 +25,7 @@ const DSL_HELP = `DSL expressions for entry/exit logic:
 
 function buildStrategy(input: {
   name: string; symbol: string; timeframe: string;
-  assetClass?: 'equity' | 'crypto' | 'currency';
+  assetClass?: 'equity' | 'crypto' | 'currency' | 'tw_futures';
   parameters: Record<string, number>;
   entry_logic: string; exit_logic: string;
   direction?: 'long' | 'short' | 'both';
@@ -60,7 +60,7 @@ const strategyFields = {
   name: z.string().describe('Strategy name'),
   symbol: z.string().describe('Trading pair or ticker (e.g., BTC/USD, AAPL)'),
   timeframe: z.string().describe('Candle interval (1m, 5m, 15m, 1h, 1d)'),
-  assetClass: z.enum(['equity', 'crypto', 'currency']).optional().describe('Asset class (auto-detected if omitted)'),
+  assetClass: z.enum(['equity', 'crypto', 'currency', 'tw_futures']).optional().describe('Asset class (auto-detected if omitted, tw_futures for Taiwan futures)'),
   parameters: z.record(z.string(), z.number()).describe('Strategy parameters (must include position_size)'),
   entry_logic: z.string().describe('DSL expression for entry condition'),
   exit_logic: z.string().describe('DSL expression for exit condition'),
@@ -74,7 +74,7 @@ const optionFields = {
   leverage: z.number().optional().describe('Leverage multiplier (default: 1)'),
   start_date: z.string().describe('Start date (YYYY-MM-DD)'),
   end_date: z.string().describe('End date (YYYY-MM-DD)'),
-  dataSource: z.enum(['openbb', 'ccxt']).optional().describe('Data source (default: openbb, use ccxt for exchange-native crypto data)'),
+  dataSource: z.enum(['openbb', 'ccxt', 'sinopac']).optional().describe('Data source (default: openbb, ccxt for crypto, sinopac for Taiwan futures)'),
 }
 
 export function createBacktestTools(
@@ -82,12 +82,14 @@ export function createBacktestTools(
   cryptoClient: CryptoClientLike,
   currencyClient: CurrencyClientLike,
   getCcxtAccount?: () => CcxtAccountLike | undefined,
+  getSinopacClient?: () => SinopacClientLike | undefined,
 ) {
   const clients: DataClients = {
     equity: equityClient,
     crypto: cryptoClient,
     currency: currencyClient,
     get ccxtAccount() { return getCcxtAccount?.() },
+    get sinopacClient() { return getSinopacClient?.() },
   }
 
   return {
@@ -231,8 +233,8 @@ export function createBacktestTools(
         interval: z.string().describe('Candle interval (1m, 5m, 15m, 1h, 1d)'),
         startDate: z.string().describe('Start date (YYYY-MM-DD)'),
         endDate: z.string().describe('End date (YYYY-MM-DD)'),
-        assetClass: z.enum(['equity', 'crypto', 'currency']).optional().describe('Asset class (auto-detected if omitted)'),
-        dataSource: z.enum(['openbb', 'ccxt']).optional().describe('Data source (default: openbb)'),
+        assetClass: z.enum(['equity', 'crypto', 'currency', 'tw_futures']).optional().describe('Asset class (auto-detected if omitted, tw_futures for Taiwan futures)'),
+        dataSource: z.enum(['openbb', 'ccxt', 'sinopac']).optional().describe('Data source (default: openbb, sinopac for Taiwan futures)'),
       }),
       execute: async ({ symbol, interval, startDate, endDate, assetClass, dataSource }) => {
         const result = await fetchOhlcv(symbol, interval, startDate, endDate, assetClass, clients, dataSource)

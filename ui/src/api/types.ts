@@ -266,7 +266,22 @@ export interface AlpacaPlatformConfig {
   paper: boolean
 }
 
-export type PlatformConfig = CcxtPlatformConfig | AlpacaPlatformConfig
+export interface SchwabPlatformConfig {
+  id: string
+  label?: string
+  type: 'schwab'
+}
+
+export interface SinopacPlatformConfig {
+  id: string
+  label?: string
+  type: 'sinopac'
+  bridgeUrl: string
+  bridgeAutoStart: boolean
+  accountType: 'stock' | 'futures' | 'both'
+}
+
+export type PlatformConfig = CcxtPlatformConfig | AlpacaPlatformConfig | SchwabPlatformConfig | SinopacPlatformConfig
 
 export interface AccountConfig {
   id: string

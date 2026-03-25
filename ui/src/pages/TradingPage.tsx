@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { api } from '../api'
 import { Section, Field, inputClass } from '../components/form'
 import { Toggle } from '../components/Toggle'
 import { GuardsSection, CRYPTO_GUARD_TYPES, SECURITIES_GUARD_TYPES } from '../components/guards'
@@ -6,7 +7,7 @@ import { SDKSelector, PLATFORM_TYPE_OPTIONS } from '../components/SDKSelector'
 import { ReconnectButton } from '../components/ReconnectButton'
 import { useTradingConfig } from '../hooks/useTradingConfig'
 import { PageHeader } from '../components/PageHeader'
-import type { PlatformConfig, CcxtPlatformConfig, AlpacaPlatformConfig, AccountConfig } from '../api/types'
+import type { PlatformConfig, CcxtPlatformConfig, AlpacaPlatformConfig, SchwabPlatformConfig, SinopacPlatformConfig, AccountConfig } from '../api/types'
 
 // ==================== Dialog state ====================
 
@@ -160,10 +161,12 @@ function AccountsTable({ accounts, platforms, onSelect }: {
   const getConnectionLabel = (account: AccountConfig) => {
     const p = getPlatform(account.platformId)
     if (!p) return '—'
-    if (p.type === 'ccxt') {
-      return p.exchange
+    switch (p.type) {
+      case 'ccxt': return p.exchange
+      case 'alpaca': return p.paper ? 'paper' : 'live'
+      case 'schwab': return 'schwab'
+      case 'sinopac': return p.accountType ?? 'both'
     }
-    return p.paper ? 'paper' : 'live'
   }
 
   if (accounts.length === 0) {
@@ -189,9 +192,14 @@ function AccountsTable({ accounts, platforms, onSelect }: {
         <tbody className="divide-y divide-border">
           {accounts.map((account) => {
             const p = getPlatform(account.platformId)
-            const badge = p?.type === 'ccxt'
-              ? { text: 'CC', color: 'text-accent bg-accent/10' }
-              : { text: 'AL', color: 'text-green bg-green/10' }
+            const badge = (() => {
+              switch (p?.type) {
+                case 'ccxt': return { text: 'CC', color: 'text-accent bg-accent/10' }
+                case 'schwab': return { text: 'CS', color: 'text-blue-400 bg-blue-400/10' }
+                case 'sinopac': return { text: 'SP', color: 'text-cyan bg-cyan/10' }
+                default: return { text: 'AL', color: 'text-green bg-green/10' }
+              }
+            })()
 
             return (
               <tr
@@ -226,7 +234,7 @@ function CreateWizard({ existingAccountIds, onSave, onClose }: {
   onClose: () => void
 }) {
   const [step, setStep] = useState(1)
-  const [type, setType] = useState<'ccxt' | 'alpaca' | null>(null)
+  const [type, setType] = useState<'ccxt' | 'alpaca' | 'schwab' | 'sinopac' | null>(null)
 
   // Step 2 fields
   const [id, setId] = useState('')
@@ -243,11 +251,11 @@ function CreateWizard({ existingAccountIds, onSave, onClose }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const defaultId = type === 'ccxt' ? `${exchange}-main` : 'alpaca-paper'
+  const defaultId = type === 'ccxt' ? `${exchange}-main` : type === 'schwab' ? 'schwab-main' : type === 'sinopac' ? 'sinopac-main' : 'alpaca-paper'
   const finalId = id.trim() || defaultId
 
   const handleSelectType = (t: string) => {
-    setType(t as 'ccxt' | 'alpaca')
+    setType(t as typeof type)
     setStep(2)
   }
 
@@ -264,9 +272,14 @@ function CreateWizard({ existingAccountIds, onSave, onClose }: {
     setSaving(true); setError('')
     try {
       const platformId = `${finalId}-platform`
-      const platform: PlatformConfig = type === 'ccxt'
-        ? { id: platformId, type: 'ccxt', exchange, sandbox, demoTrading }
-        : { id: platformId, type: 'alpaca', paper }
+      const platform: PlatformConfig = (() => {
+        switch (type) {
+          case 'ccxt': return { id: platformId, type: 'ccxt' as const, exchange, sandbox, demoTrading }
+          case 'schwab': return { id: platformId, type: 'schwab' as const }
+          case 'sinopac': return { id: platformId, type: 'sinopac' as const, bridgeUrl: 'http://localhost:8890', bridgeAutoStart: false, accountType: 'both' as const }
+          default: return { id: platformId, type: 'alpaca' as const, paper }
+        }
+      })()
       const account: AccountConfig = {
         id: finalId, platformId,
         ...(apiKey && { apiKey }),
@@ -342,18 +355,40 @@ function CreateWizard({ existingAccountIds, onSave, onClose }: {
           </div>
         )}
 
+        {step === 2 && type === 'schwab' && (
+          <div className="space-y-3">
+            <p className="text-[13px] text-text-muted mb-4">Configure your Schwab connection</p>
+            <Field label="Account ID">
+              <input className={inputClass} value={id} onChange={(e) => setId(e.target.value.trim())} placeholder={defaultId} />
+            </Field>
+            <p className="text-[11px] text-text-muted/60">US equities and options via Schwab API. OAuth authorization required after setup.</p>
+            {error && <p className="text-[12px] text-red">{error}</p>}
+          </div>
+        )}
+
+        {step === 2 && type === 'sinopac' && (
+          <div className="space-y-3">
+            <p className="text-[13px] text-text-muted mb-4">Configure your Sinopac connection</p>
+            <Field label="Account ID">
+              <input className={inputClass} value={id} onChange={(e) => setId(e.target.value.trim())} placeholder={defaultId} />
+            </Field>
+            <p className="text-[11px] text-text-muted/60">Taiwan stocks, futures, and options via Shioaji. Requires the Python bridge sidecar running.</p>
+            {error && <p className="text-[12px] text-red">{error}</p>}
+          </div>
+        )}
+
         {step === 3 && (
           <div className="space-y-3">
             <p className="text-[13px] text-text-muted mb-4">API Credentials</p>
-            <Field label="API Key">
+            <Field label={type === 'schwab' ? 'Client ID' : 'API Key'}>
               <input className={inputClass} type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Optional — can be added later" />
             </Field>
-            <Field label={type === 'alpaca' ? 'Secret Key' : 'API Secret'}>
+            <Field label={type === 'alpaca' ? 'Secret Key' : type === 'schwab' ? 'Client Secret' : 'API Secret'}>
               <input className={inputClass} type="password" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} placeholder="Optional — can be added later" />
             </Field>
-            {type === 'ccxt' && (
-              <Field label="Password">
-                <input className={inputClass} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Required by some exchanges (e.g. OKX)" />
+            {(type === 'ccxt' || type === 'schwab') && (
+              <Field label={type === 'schwab' ? 'Redirect URI' : 'Password'}>
+                <input className={inputClass} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={type === 'schwab' ? 'https://127.0.0.1 (default)' : 'Required by some exchanges (e.g. OKX)'} />
               </Field>
             )}
             {error && <p className="text-[12px] text-red">{error}</p>}
@@ -438,6 +473,7 @@ function EditDialog({ account, platform, onSaveAccount, onSavePlatform, onDelete
   }
 
   const guardTypes = platform.type === 'ccxt' ? CRYPTO_GUARD_TYPES : SECURITIES_GUARD_TYPES
+  const apiKeyLabel = platform.type === 'schwab' ? 'Client ID' : 'API Key'
 
   return (
     <Dialog onClose={onClose} width="w-[520px]">
@@ -458,27 +494,39 @@ function EditDialog({ account, platform, onSaveAccount, onSavePlatform, onDelete
           <div className="mb-3">
             <span className="text-[12px] text-text-muted">Type</span>
             <span className="ml-2 text-[12px] font-medium text-text">
-              {platform.type === 'ccxt' ? 'CCXT' : 'Alpaca'}
+              {PLATFORM_TYPE_LABELS[platform.type] ?? platform.type}
             </span>
           </div>
-          {platformDraft.type === 'ccxt' ? (
+          {platformDraft.type === 'ccxt' && (
             <CcxtConnectionFields draft={platformDraft} onPatch={patchPlatform} />
-          ) : (
+          )}
+          {platformDraft.type === 'alpaca' && (
             <AlpacaConnectionFields draft={platformDraft} onPatch={patchPlatform} />
+          )}
+          {platformDraft.type === 'schwab' && (
+            <SchwabConnectionFields accountId={account.id} />
+          )}
+          {platformDraft.type === 'sinopac' && (
+            <SinopacConnectionFields draft={platformDraft as SinopacPlatformConfig} onPatch={patchPlatform} />
           )}
         </Section>
 
         {/* Credentials */}
         <Section title="Credentials">
-          <Field label="API Key">
+          <Field label={apiKeyLabel}>
             <input className={inputClass} type="password" value={accountDraft.apiKey || ''} onChange={(e) => patchAccount('apiKey', e.target.value)} placeholder="Not configured" />
           </Field>
-          <Field label={platform.type === 'alpaca' ? 'Secret Key' : 'API Secret'}>
+          <Field label={platform.type === 'alpaca' ? 'Secret Key' : platform.type === 'schwab' ? 'Client Secret' : 'API Secret'}>
             <input className={inputClass} type="password" value={accountDraft.apiSecret || ''} onChange={(e) => patchAccount('apiSecret', e.target.value)} placeholder="Not configured" />
           </Field>
           {platform.type === 'ccxt' && (
             <Field label="Password (optional)">
               <input className={inputClass} type="password" value={accountDraft.password || ''} onChange={(e) => patchAccount('password', e.target.value)} placeholder="Required by some exchanges (e.g. OKX)" />
+            </Field>
+          )}
+          {platform.type === 'schwab' && (
+            <Field label="Redirect URI">
+              <input className={inputClass} value={accountDraft.password || ''} onChange={(e) => patchAccount('password', e.target.value)} placeholder="https://127.0.0.1" />
             </Field>
           )}
         </Section>
@@ -536,6 +584,15 @@ function EditDialog({ account, platform, onSaveAccount, onSavePlatform, onDelete
   )
 }
 
+// ==================== Platform type labels ====================
+
+const PLATFORM_TYPE_LABELS: Record<string, string> = {
+  ccxt: 'CCXT',
+  alpaca: 'Alpaca',
+  schwab: 'Charles Schwab',
+  sinopac: 'Sinopac (Shioaji)',
+}
+
 // ==================== Connection Fields ====================
 
 function CcxtConnectionFields({ draft, onPatch }: {
@@ -572,6 +629,123 @@ function AlpacaConnectionFields({ draft, onPatch }: {
         <span className="text-[13px] text-text">Paper Trading</span>
       </label>
       <p className="text-[11px] text-text-muted/60 mt-1">When enabled, orders are routed to Alpaca's paper trading environment.</p>
+    </>
+  )
+}
+
+function SchwabConnectionFields({ accountId }: { accountId?: string }) {
+  const [authUrl, setAuthUrl] = useState<string | null>(null)
+  const [callbackUrl, setCallbackUrl] = useState('')
+  const [authStatus, setAuthStatus] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleGetAuthUrl = async () => {
+    if (!accountId) return
+    setLoading(true)
+    try {
+      const data = await api.trading.getAuthUrl(accountId)
+      setAuthUrl(data.authUrl)
+      setAuthStatus('')
+    } catch (err) {
+      setAuthStatus(err instanceof Error ? err.message : 'Failed to get auth URL')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleCompleteAuth = async () => {
+    if (!accountId || !callbackUrl.trim()) return
+    setLoading(true)
+    try {
+      const result = await api.trading.completeAuthCallback(accountId, callbackUrl.trim())
+      if (result.success) {
+        setAuthStatus('OAuth completed! Reconnect the account to activate.')
+        setAuthUrl(null)
+        setCallbackUrl('')
+      } else {
+        setAuthStatus(result.error ?? 'Auth failed')
+      }
+    } catch (err) {
+      setAuthStatus(err instanceof Error ? err.message : 'Auth callback failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] text-text-muted/60">
+        US equities and options via Schwab API. Complete OAuth below.
+      </p>
+
+      {!authUrl && (
+        <button
+          onClick={handleGetAuthUrl}
+          disabled={loading || !accountId}
+          className="px-3 py-1.5 text-[12px] font-medium rounded-md border border-border hover:bg-bg-tertiary disabled:opacity-50 transition-colors"
+        >
+          {loading ? 'Loading...' : 'Start OAuth Flow'}
+        </button>
+      )}
+
+      {authUrl && (
+        <div className="space-y-2 border border-border rounded-lg p-3 bg-bg-secondary">
+          <p className="text-[12px] text-text-muted">1. Open this URL in your browser:</p>
+          <a
+            href={authUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[11px] text-accent hover:underline break-all block"
+          >
+            {authUrl.slice(0, 80)}...
+          </a>
+          <p className="text-[12px] text-text-muted mt-2">2. After authorization, paste the callback URL:</p>
+          <input
+            className={inputClass}
+            value={callbackUrl}
+            onChange={(e) => setCallbackUrl(e.target.value)}
+            placeholder="https://127.0.0.1/?code=..."
+          />
+          <button
+            onClick={handleCompleteAuth}
+            disabled={loading || !callbackUrl.trim()}
+            className="px-3 py-1.5 text-[12px] font-medium rounded-md bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
+          >
+            {loading ? 'Completing...' : 'Complete Authorization'}
+          </button>
+        </div>
+      )}
+
+      {authStatus && (
+        <p className={`text-[11px] ${authStatus.includes('completed') ? 'text-green' : 'text-red'}`}>
+          {authStatus}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function SinopacConnectionFields({ draft, onPatch }: {
+  draft: SinopacPlatformConfig
+  onPatch: (field: string, value: unknown) => void
+}) {
+  return (
+    <>
+      <Field label="Bridge URL">
+        <input className={inputClass} value={draft.bridgeUrl} onChange={(e) => onPatch('bridgeUrl', e.target.value.trim())} placeholder="http://localhost:8890" />
+      </Field>
+      <Field label="Account Type">
+        <select className={inputClass} value={draft.accountType} onChange={(e) => onPatch('accountType', e.target.value)}>
+          <option value="both">Both (Stock + Futures/Options)</option>
+          <option value="stock">Stock Only</option>
+          <option value="futures">Futures/Options Only</option>
+        </select>
+      </Field>
+      <label className="flex items-center gap-2.5 cursor-pointer">
+        <Toggle checked={draft.bridgeAutoStart} onChange={(v) => onPatch('bridgeAutoStart', v)} />
+        <span className="text-[13px] text-text">Auto-start Bridge</span>
+      </label>
+      <p className="text-[11px] text-text-muted/60 mt-1">When enabled, the Python bridge sidecar is started automatically.</p>
     </>
   )
 }

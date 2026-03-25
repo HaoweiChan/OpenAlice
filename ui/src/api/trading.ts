@@ -21,6 +21,19 @@ export const tradingApi = {
     return res.json()
   },
 
+  async getAuthUrl(accountId: string): Promise<{ authUrl: string }> {
+    return fetchJson(`/api/trading/accounts/${accountId}/auth-url`)
+  },
+
+  async completeAuthCallback(accountId: string, callbackUrl: string): Promise<{ success: boolean; error?: string }> {
+    const res = await fetch(`/api/trading/accounts/${accountId}/auth-callback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callbackUrl }),
+    })
+    return res.json()
+  },
+
   async accountInfo(accountId: string): Promise<AccountInfo> {
     return fetchJson(`/api/trading/accounts/${accountId}/account`)
   },

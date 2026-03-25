@@ -19,7 +19,7 @@ export interface StrategyDef {
   name: string
   symbol: string
   timeframe: string
-  assetClass?: 'equity' | 'crypto' | 'currency'
+  assetClass?: 'equity' | 'crypto' | 'currency' | 'tw_futures'
   parameters: Record<string, number>
   entry_logic: string
   exit_logic: string
