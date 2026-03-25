@@ -29,11 +29,14 @@ coverage/
 # Claude Code
 .claude/
 
-# OpenSpec (local workflow)
-openspec/
+# Local workflow helpers
 .cursor/
 .github/prompts/
 .github/skills/
+
+# Python
+**/__pycache__/
+.venv/
 packages/ibkr/ref/source/JavaClient/
 packages/ibkr/ref/source/cppclient/
 packages/ibkr/ref/samples/Java/
