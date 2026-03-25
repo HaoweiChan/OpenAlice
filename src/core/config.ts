@@ -166,6 +166,19 @@ const heartbeatSchema = z.object({
   activeHours: activeHoursSchema,
 })
 
+const truthSocialSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Truth Social account handles to sync (starting with Donald Trump). */
+  handles: z.array(z.string().min(1)).default(['realDonaldTrump']),
+  /** Initial public source implementation. */
+  source: z.enum(['trumpstruth-rss']).default('trumpstruth-rss'),
+  feedUrl: z.string().min(1).default('https://trumpstruth.org/feed'),
+  postsDir: z.string().min(1).default('data/truthsocial/posts'),
+  signalsDir: z.string().min(1).default('data/truthsocial/signals'),
+  maxPostsInMemory: z.number().int().min(100).default(1000),
+  maxSignalsInMemory: z.number().int().min(100).default(2000),
+})
+
 export const toolsSchema = z.object({
   /** Tool names that are disabled. Tools not listed are enabled by default. */
   disabled: z.array(z.string()).default([]),
@@ -291,6 +304,7 @@ export type Config = {
   heartbeat: z.infer<typeof heartbeatSchema>
   connectors: z.infer<typeof connectorsSchema>
   news: z.infer<typeof newsCollectorSchema>
+  truthSocial: z.infer<typeof truthSocialSchema>
   tools: z.infer<typeof toolsSchema>
   automation: z.infer<typeof automationSchema>
 }
@@ -325,7 +339,7 @@ async function parseAndSeed<T>(filename: string, schema: z.ZodType<T>, raw: unkn
 }
 
 export async function loadConfig(): Promise<Config> {
-  const files = ['engine.json', 'agent.json', 'crypto.json', 'securities.json', 'market-data.json', 'compaction.json', 'ai-provider-manager.json', 'heartbeat.json', 'connectors.json', 'news.json', 'tools.json', 'automation.json'] as const
+  const files = ['engine.json', 'agent.json', 'crypto.json', 'securities.json', 'market-data.json', 'compaction.json', 'ai-provider-manager.json', 'heartbeat.json', 'connectors.json', 'news.json', 'tools.json', 'automation.json', 'truthsocial.json'] as const
   const raws = await Promise.all(files.map((f) => loadJsonFile(f)))
 
   // TODO: remove all migration blocks before v1.0 — no stable release yet, breaking changes are fine
@@ -391,6 +405,7 @@ export async function loadConfig(): Promise<Config> {
     news:          await parseAndSeed(files[9], newsCollectorSchema, raws[9]),
     tools:         await parseAndSeed(files[10], toolsSchema, raws[10]),
     automation:    await parseAndSeed(files[11], automationSchema, raws[11]),
+    truthSocial:   await parseAndSeed(files[12], truthSocialSchema, raws[12]),
   }
 }
 
@@ -584,6 +599,7 @@ const sectionSchemas: Record<ConfigSection, z.ZodTypeAny> = {
   heartbeat: heartbeatSchema,
   connectors: connectorsSchema,
   news: newsCollectorSchema,
+  truthSocial: truthSocialSchema,
   tools: toolsSchema,
   automation: automationSchema,
 }
@@ -599,6 +615,7 @@ const sectionFiles: Record<ConfigSection, string> = {
   heartbeat: 'heartbeat.json',
   connectors: 'connectors.json',
   news: 'news.json',
+  truthSocial: 'truthsocial.json',
   tools: 'tools.json',
   automation: 'automation.json',
 }

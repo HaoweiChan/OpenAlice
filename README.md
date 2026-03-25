@@ -182,6 +182,7 @@ All config lives in `data/config/` as JSON files with Zod validation. Missing fi
 | `tools.json` | Tool enable/disable configuration |
 | `market-data.json` | Data backend (`typebb-sdk` / `openbb-api`), per-asset-class providers, provider API keys, embedded HTTP server config |
 | `news.json` | RSS feeds, fetch interval, retention period |
+| `truthsocial.json` | Truth Social sync source, handles, and local storage paths |
 | `compaction.json` | Context window limits, auto-compaction thresholds |
 | `heartbeat.json` | Heartbeat enable/disable, interval, active hours |
 
@@ -193,6 +194,26 @@ Persona and heartbeat prompts use a **default + user override** pattern:
 | `data/default/heartbeat.default.md` | `data/brain/heartbeat.md` |
 
 On first run, defaults are auto-copied to the user override path. Edit the user files to customize without touching version control.
+
+## Truth Social signals (Donald Trump)
+
+Truth Social syncing is configured via `data/config/truthsocial.json` (auto-seeded on first run). The default implementation fetches from `trumpstruth.org` and stores:
+
+- Posts: `data/truthsocial/posts/<handle>.jsonl`
+- Signals: `data/truthsocial/signals/<handle>.jsonl`
+
+To schedule periodic sync + classification, create a cron job (optionally targeting a connector channel):
+
+```json
+{
+  "name": "truthsocial-trump-digest",
+  "schedule": { "kind": "cron", "cron": "*/15 * * * *" },
+  "payload": "Run truthsocialSyncAndClassify for realDonaldTrump and reply with the digest only.",
+  "channel": "telegram"
+}
+```
+
+You can create it via the `cronAdd` tool from chat, or through the Cron Jobs UI page.
 
 ## Project Structure
 

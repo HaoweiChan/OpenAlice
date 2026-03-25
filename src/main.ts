@@ -56,6 +56,10 @@ import { PerformanceTracker } from './domain/trading/automation/performance-trac
 import { StrategyLifecycle } from './domain/trading/automation/strategy-lifecycle.js'
 import { createStrategyTools } from './tool/strategy.js'
 import { SinopacBridgeClient } from './domain/trading/brokers/sinopac/sinopac-bridge-client.js'
+import { TrumpstruthRssClient } from './domain/truthsocial/client.js'
+import { TruthSocialPostStore } from './domain/truthsocial/post-store.js'
+import { TruthSocialSignalStore } from './domain/truthsocial/signal.js'
+import { createTruthSocialTools } from './tool/truthsocial.js'
 
 // ==================== Persistence paths ====================
 
@@ -114,6 +118,22 @@ async function loadGitState(accountId: string): Promise<GitExportState | undefin
 
 async function main() {
   const config = await loadConfig()
+
+  // ==================== Truth Social (file-driven stores) ====================
+
+  const truthCfg = config.truthSocial
+  const truthHandle = truthCfg.handles[0] ?? 'realDonaldTrump'
+  const truthClient = new TrumpstruthRssClient(truthCfg.feedUrl, truthHandle)
+  const truthPostStore = new TruthSocialPostStore({
+    dir: truthCfg.postsDir,
+    maxInMemory: truthCfg.maxPostsInMemory,
+  })
+  const truthSignalStore = new TruthSocialSignalStore({
+    dir: truthCfg.signalsDir,
+    maxInMemory: truthCfg.maxSignalsInMemory,
+  })
+  await truthPostStore.init(truthHandle)
+  await truthSignalStore.init(truthHandle)
 
   // ==================== Trading Account Manager ====================
 
@@ -365,6 +385,15 @@ async function main() {
     compaction: config.compaction,
     toolCallLog,
   })
+
+  toolCenter.register(createTruthSocialTools({
+    agentCenter,
+    getDisabledTools: () => toolCenter.list(),
+    client: truthClient,
+    postStore: truthPostStore,
+    signalStore: truthSignalStore,
+    defaultHandle: truthHandle,
+  }), 'truthsocial')
 
   // ==================== Connector Center ====================
 
