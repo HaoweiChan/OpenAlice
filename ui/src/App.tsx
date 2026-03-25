@@ -11,11 +11,12 @@ import { TradingPage } from './pages/TradingPage'
 import { ConnectorsPage } from './pages/ConnectorsPage'
 import { DevPage } from './pages/DevPage'
 import { HeartbeatPage } from './pages/HeartbeatPage'
+import { CronPage } from './pages/CronPage'
 import { ToolsPage } from './pages/ToolsPage'
 import { AgentStatusPage } from './pages/AgentStatusPage'
 
 export type Page =
-  | 'chat' | 'portfolio' | 'events' | 'agent-status' | 'heartbeat' | 'data-sources' | 'connectors'
+  | 'chat' | 'portfolio' | 'events' | 'agent-status' | 'heartbeat' | 'cron' | 'data-sources' | 'connectors'
   | 'trading'
   | 'ai-provider' | 'settings' | 'tools' | 'dev'
 
@@ -26,6 +27,7 @@ export const ROUTES: Record<Page, string> = {
   'events': '/events',
   'agent-status': '/agent-status',
   'heartbeat': '/heartbeat',
+  'cron': '/cron',
   'data-sources': '/data-sources',
   'connectors': '/connectors',
   'tools': '/tools',
@@ -68,6 +70,7 @@ export function App() {
             <Route path="/events" element={<EventsPage />} />
             <Route path="/agent-status" element={<AgentStatusPage />} />
             <Route path="/heartbeat" element={<HeartbeatPage />} />
+            <Route path="/cron" element={<CronPage />} />
             <Route path="/data-sources" element={<DataSourcesPage />} />
             <Route path="/connectors" element={<ConnectorsPage />} />
             <Route path="/tools" element={<ToolsPage />} />
